@@ -1,0 +1,1530 @@
+---
+title: "2022 CLS Data Summarization"
+author: "Essence Global Advanced Analytics Team"
+date: "`r Sys.Date()`"
+output:
+  html_notebook:
+    toc: yes
+    toc_float: yes
+    number_sections: no
+    theme: cerulean
+    highlight: zenburn
+    fig_caption: yes
+    df_print: paged
+
+---
+
+```{r setup, include=TRUE}
+knitr::opts_chunk$set(echo = TRUE)
+options(knitr.table.format = "html") 
+options(digits=5)
+options(scipen = 100)
+knitr::opts_chunk$set(tidy.opts=list(width.cutoff=80), tidy=TRUE)
+#install.packages("pacman")
+library(pacman) #for quick load/install of packages
+p_load(dplyr, readr, tidyverse,reticulate, lubridate,janitor, sqldf,googlesheets4)
+p_load(skimr,splitstackshape,stringr,rqdatatable)
+p_load(moments)
+p_load(kableExtra)
+p_load(ggplot2, plotly,echarts4r,ggpubr,forcats,scales,RColorBrewer)
+p_load(ggthemes)
+
+#Advanced EDA packages 
+library("Rtsne")
+library("DataExplorer") #used for basic stats, qq plots and bar-plots
+library("SmartEDA") #for more descriptive statistics 
+library("dlookr")
+library("ggstatsplot")
+library("flextable") #for nicer looking tables 
+library("summarytools")
+library("skimr")
+library("performance") #imputing outliers 
+```
+
+***
+# Data Summaries
+
+## *Read-in Google Sheet of Final Study Dataset*  
+
+[Final Dataset can be found here.](https://docs.google.com/spreadsheets/d/1N48rTeq7md0v8w8pG_8XIiuapPHQAeO5WoWIB3eaceI/edit#gid=14493513773) 
+
+Relabeling regions for countries where regions were 'NA' and replacing null values in country column to be 'US'
+
+Additionally, creating new region column to differentiate CA and US countries, and finally filtering out study that had 0 conversions. 
+
+```{r}
+Final_CLS_2022_Study_List <- read_csv("FinalDataset_2022_Update.csv") %>%
+  mutate(region = case_when(
+    country %in% c('CA', 'US', 'US + CA', 'BR', 'MX', 'CL', 'SPLATAM - (AR, CL, CO, MX, PE)',
+                   'LAC-Others (BO, CR, DO, EC, GT, HN, NI, PA, PR, PY, SV, UY)', 'LAC-Others (BO, CR, DO, EC, GT, HN, NI, PA, PY)') ~ 'AMER',
+    TRUE ~ region),
+
+  country = case_when(
+    is.na(country) ~ 'US', 
+    TRUE ~ country),
+  
+  #search = case_when(
+    #channel == 'Search' ~ 'Search',
+    #TRUE ~ 'Non-Search'),
+  
+   region_v2 = case_when(
+    country %in% c('CA', 'US', 'US + CA') ~ 'AMER_USCA', TRUE ~ region)) %>%
+  
+  filter(exposed != 0) 
+```
+***
+
+```{r}
+#TBD
+#WRITING SHEETS WILL BE COMMENTED OUT UNLESS REFRESH IS NECESSARY
+#write_sheet(Final_CLS_2021_Study_List, ss = #'https://docs.google.com/spreadsheets/d/146_bmm-FgOeOQub3o4WVtt-9Aw8pqYvkQnwsHmRdZDs/edit#gid#=587747443',
+#          sheet = 'Final_Clean_Dataset_v2')
+
+skim(Final_CLS_2022_Study_List) %>%
+  as.tibble() %>%
+  select(skim_type, skim_variable,complete_rate)
+
+nrow(Final_CLS_2022_Study_List)
+
+```
+***
+
+## Create Group Conversion Events
+
+### Look at all current conversion events
+
+```{r}
+Final_CLS_2022_Study_List %>%
+  filter(channel =="Search") %>%
+  group_by(pa, conversion) %>% 
+  summarize(count = n()) %>% 
+    kbl() %>% 
+ kable_material(c("striped", "hover","condensed","responsive"),full_width = F,fixed_thead = T)
+```
+***
+##Creating Grouped conversion events
+```{r, warning=FALSE}
+
+Final_CLS_2022_Study_List =
+  Final_CLS_2022_Study_List %>% 
+ mutate(
+   parsed_type = parse_number(conversion),
+   grouped_conversion = case_when(
+   conversion %in% c('Chromebook Microsite Referral Clicks Q4 2015','Type 251422729 (Chromebooks Microsite Referral Clicks (Q4 2017))') ~ 'Chromebook Referrals',
+   conversion %in% c('Desktop Downloads','Type 11541547 (Desktop Download)') ~      
+     'Desktop Downloads',
+   pa == 'Pixel'~ 'Mobile Conversions',
+   pa == 'DSM' ~ 'Non-Mobile Device Conversions',
+   conversion == 'Type 302982954 (Lena - P Lead)' ~ 'Lena P Lead' , 
+    conversion == 'Type 288347008 (LENA - B Lead)' ~ 'Lena B Lead' ,
+    conversion == 'Type 288697653 (LENA - Q Lead)' ~ 'Lena Q Lead' ,
+   parsed_type == 330755641 ~ 'Microsite Conversions',
+   parsed_type == 14257803 ~ 'Enterprise Signups',
+   parsed_type == 289680712 ~ 'Google(iOs) First Open',
+   parsed_type ==  256522942 ~ 'YouTube TV - Web - Trial Start',
+  parsed_type ==  452391534 ~ 'Trial Signups Complete' ,
+   TRUE ~ conversion
+   )
+) 
+
+Final_CLS_2022_Study_List %>% 
+  filter(channel == 'Search') %>%
+  group_by(pa, grouped_conversion) %>% 
+  summarize(count = n())%>% 
+    kbl() %>% 
+ kable_material(c("striped", "hover","condensed","responsive"),full_width = F,fixed_thead = T)
+```
+
+***
+
+## Checking frequencies for Search Data 
+
+#### Quarters in Search Data
+```{r}
+Final_CLS_2022_Study_List %>%
+filter(channel == 'Search') %>% 
+  group_by(quarter) %>%
+  summarize(Overall_Studies = n_distinct(study_id,quarter)) %>%
+  #summarize(Overall_Studies = n()) %>%
+  ggplot(aes(x=quarter, y=Overall_Studies)) + geom_bar(stat = 'identity', fill = "lightblue") +
+  ggtitle("Quarters in Search Studies") +
+    xlab("Quarter") +
+    ylab("Count") +
+  coord_flip() +
+  theme_minimal()
+```
+
+#### PA's in Search Data
+```{r}
+Final_CLS_2022_Study_List %>%
+filter(channel == 'Search') %>% 
+  group_by(pa) %>%
+  summarize(Overall_Studies = n_distinct(study_id,quarter)) %>%
+  ggplot(aes(x=pa, y=Overall_Studies)) + geom_bar(stat = 'identity', fill = 'lightblue') +
+  ggtitle("PA's in Search Studies") +
+    xlab("PA") +
+    ylab("Count") +
+  coord_flip() +
+  theme_minimal()
+```
+
+#### Regions in Search Data 
+```{r}
+Final_CLS_2022_Study_List %>%
+filter(channel == 'Search') %>% 
+  filter(tactic != "All") %>%
+  group_by(region_v2) %>%
+  #summarize(Overall_Studies = n_distinct(study_id,quarter)) %>%
+  summarize(Overall_Studies = n()) %>%
+  ggplot(aes(x=region_v2, y=Overall_Studies)) + geom_bar(stat = 'identity', fill = 'lightblue') +
+  ggtitle("Regions in Search Studies") +
+    xlab("Region") +
+    ylab("Count") +
+  coord_flip() +
+  theme_minimal()
+```
+
+#### Tactics in Search Data
+```{r}
+Final_CLS_2022_Study_List %>%
+filter(channel == 'Search') %>% 
+  filter(tactic != 'All') %>%
+  group_by(tactic) %>%
+  #summarize(Overall_Studies = n_distinct(study_id,quarter)) %>%
+  summarize(Overall_Studies = n()) %>%
+  ggplot(aes(x=tactic, y=Overall_Studies)) + geom_bar(stat = 'identity', fill = 'lightblue') +
+  ggtitle("Tactics in Search Studies") +
+    xlab("Tactic") +
+    ylab("Count") +
+  coord_flip() +
+  theme_minimal()
+```
+
+### Boxplot of Cost Spent by Grouped Conversion Event  
+```{r fig.height = 10, fig.width = 10}
+#my_xlab <- paste(levels(Final_CLS_2021_Study_List$grouped_conversion),"\n(N=",table(Final_CLS_2021_Study_List$grouped_conversion),")",sep="")
+
+n_fun <- function(x){
+  return(data.frame(y = median(x), label = paste0("n = ",length(x))))
+}
+
+
+p <-
+Final_CLS_2022_Study_List %>%
+  filter(channel =='Search') %>% 
+  filter(tactic != 'All') %>%
+
+  mutate(class = fct_reorder(as.factor(grouped_conversion), cost_spent_on_exposed_group, .fun='median')) %>%
+  ggplot() +
+    aes(
+      x = reorder(as.factor(class),cost_spent_on_exposed_group),y = cost_spent_on_exposed_group, fill = grouped_conversion
+        #absolute_lift*100/cost_spent_on_exposed_group
+        ) +
+  geom_boxplot() +
+stat_summary(fun.data = n_fun, geom = "text", size = 2) +
+    theme_bw() +
+    theme(legend.position="none",
+          axis.text.x=element_blank(),
+           axis.title.y = element_blank()
+          ) +
+    xlab("Grouped Conversion Type")+
+ #    scale_x_discrete(labels=my_xlab) +
+    ylab("Cost Spent on Exposed Group") +
+  coord_flip()
+
+ggplotly(p, tooltip = c("text"))
+```
+***
+## Boxplot of Absolute Lift by Grouped Conversion Event 
+```{r fig.height = 10, fig.width = 10}
+#my_xlab <- paste(levels(Final_CLS_2021_Study_List$grouped_conversion),"\n(N=",table(Final_CLS_2021_Study_List$grouped_conversion),")",sep="")
+
+n_fun <- function(x){
+  return(data.frame(y = median(x), label = paste0("n = ",length(x))))
+}
+
+
+p <-
+Final_CLS_2022_Study_List %>%
+  filter(channel =='Search') %>% 
+  filter(tactic !='All') %>%
+
+  mutate(class = fct_reorder(as.factor(grouped_conversion), absolute_lift, .fun='median')) %>%
+  ggplot() +
+    aes(
+      x = reorder(as.factor(class),absolute_lift),y = absolute_lift, fill = grouped_conversion
+        #absolute_lift*100/cost_spent_on_exposed_group
+        ) +
+  geom_boxplot() +
+stat_summary(fun.data = n_fun, geom = "text", size = 2) +
+    theme_bw() +
+    theme(legend.position="none",
+          axis.text.x=element_blank(),
+           axis.title.y = element_blank()
+          ) +
+    xlab("Grouped Conversion Type")+
+ #    scale_x_discrete(labels=my_xlab) +
+    ylab("Lift") +
+  coord_flip()
+
+ggplotly(p, tooltip = c("text"))
+```
+
+## Boxplot of Absolute Lift by Grouped Conversion Event - Excluding Desktop Downloads 
+```{r fig.height = 10, fig.width = 10}
+#my_xlab <- paste(levels(Final_CLS_2021_Study_List$grouped_conversion),"\n(N=",table(Final_CLS_2021_Study_List$grouped_conversion),")",sep="")
+
+n_fun <- function(x){
+  return(data.frame(y = median(x), label = paste0("n = ",length(x))))
+}
+
+
+p <-
+Final_CLS_2022_Study_List %>%
+  filter(channel =='Search') %>% 
+  filter(conversion != 'Desktop Downloads') %>%
+  filter(tactic!='All') %>% 
+
+  mutate(class = fct_reorder(as.factor(grouped_conversion), absolute_lift, .fun='median')) %>%
+  ggplot() +
+    aes(
+      x = reorder(as.factor(class),absolute_lift),y = absolute_lift, fill = grouped_conversion
+        #absolute_lift*100/cost_spent_on_exposed_group
+        ) +
+  geom_boxplot() +
+stat_summary(fun.data = n_fun, geom = "text", size = 2) +
+    theme_bw() +
+    theme(legend.position="none",
+          axis.text.x=element_blank(),
+           axis.title.y = element_blank()
+          ) +
+    xlab("Grouped Conversion Type")+
+ #    scale_x_discrete(labels=my_xlab) +
+    ylab("Lift") +
+  coord_flip()
+
+ggplotly(p, tooltip = c("text"))
+```
+
+## Summary of Findings
+
+1. Very Significant positive lift event outliers in Free Trial Submit and Non-Mobile Device Conversions
+
+2. Negative lifts in Desktop Downloads, Non-Mobile Device Conversions and Mobile Conversions
+
+3. Much larger variation in Non-Mobile Device Conversions than Mobile Conversions
+
+4. Desktop Downloads has largest range in values with minimum at -3252 and maximum at 171269
+
+5. Desktop Downloads had maximum values of absolute lift of all conversion events, but lowest range of cost spent with the exception of outliers
+
+6. Non-Mobile Device Conversions cost median 3 times bigger than Mobile Conversions had much larger range on cost spent than Mobile Conversions, but lift was not significantly higher and included significantly more negative lift
+
+##Count of negative lifts by Grouped Conversion
+```{r}
+Final_CLS_2022_Study_List %>%
+  filter(channel == "Search") %>%
+  filter(tactic != "All") %>%
+  group_by(grouped_conversion) %>%
+  summarise(Negative_Count = sum(absolute_lift < 0),
+            Percent_Negative = 100 * (sum(Negative_Count)/n()))
+```
+
+
+
+## Boxplot of Cost Spent by Region
+```{r fig.height = 10, fig.width = 10}
+#my_xlab <- paste(levels(Final_CLS_2021_Study_List$grouped_conversion),"\n(N=",table(Final_CLS_2021_Study_List$grouped_conversion),")",sep="")
+
+n_fun <- function(x){
+  return(data.frame(y = median(x), label = paste0("n = ",length(x))))
+}
+
+
+p <-
+Final_CLS_2022_Study_List %>%
+  filter(channel =='Search') %>% 
+  filter(tactic != 'All') %>%
+
+  mutate(class = fct_reorder(as.factor(region_v2), cost_spent_on_exposed_group, .fun='median')) %>%
+  ggplot() +
+    aes(
+      x = reorder(as.factor(class),cost_spent_on_exposed_group),y = cost_spent_on_exposed_group, fill = region_v2
+        #absolute_lift*100/cost_spent_on_exposed_group
+        ) +
+  geom_boxplot() +
+stat_summary(fun.data = n_fun, geom = "text", size = 2) +
+    theme_bw() +
+    theme(legend.position="none",
+          axis.text.x=element_blank(),
+           axis.title.y = element_blank()
+          ) +
+    xlab("Region Type")+
+ #    scale_x_discrete(labels=my_xlab) +
+    ylab("Cost Spent on Exposed Group") +
+  coord_flip()
+
+ggplotly(p, tooltip = c("text"))
+```
+
+## Boxplot of Absolute Lift by Region
+```{r fig.height = 10, fig.width = 10}
+#my_xlab <- paste(levels(Final_CLS_2021_Study_List$grouped_conversion),"\n(N=",table(Final_CLS_2021_Study_List$grouped_conversion),")",sep="")
+
+n_fun <- function(x){
+  return(data.frame(y = median(x), label = paste0("n = ",length(x))))
+}
+
+
+p <-
+Final_CLS_2022_Study_List %>%
+  filter(channel =='Search') %>% 
+  filter(tactic != 'All') %>%
+
+  mutate(class = fct_reorder(as.factor(region_v2), absolute_lift, .fun='median')) %>%
+  ggplot() +
+    aes(
+      x = reorder(as.factor(class),absolute_lift),y = absolute_lift, fill = region_v2
+        #absolute_lift*100/cost_spent_on_exposed_group
+        ) +
+  geom_boxplot() +
+stat_summary(fun.data = n_fun, geom = "text", size = 2) +
+    theme_bw() +
+    theme(legend.position="none",
+          axis.text.x=element_blank(),
+           axis.title.y = element_blank()
+          ) +
+    xlab("Region Type")+
+ #    scale_x_discrete(labels=my_xlab) +
+    ylab("Lift") +
+  coord_flip()
+
+ggplotly(p, tooltip = c("text"))
+```
+***
+## Boxplot of Absolute Lift by Region - Excluding AO
+```{r}
+#my_xlab <- paste(levels(Final_CLS_2021_Study_List$grouped_conversion),"\n(N=",table(Final_CLS_2021_Study_List$grouped_conversion),")",sep="")
+
+n_fun <- function(x){
+  return(data.frame(y = median(x), label = paste0("n = ",length(x))))
+}
+
+
+p <-
+Final_CLS_2022_Study_List %>%
+  filter(channel =='Search') %>% 
+  filter(tactic != 'All') %>%
+  filter(region_v2 != "AO") %>%
+
+  mutate(class = fct_reorder(as.factor(region_v2), absolute_lift, .fun='median')) %>%
+  ggplot() +
+    aes(
+      x = reorder(as.factor(class),absolute_lift),y = absolute_lift, fill = region_v2
+        #absolute_lift*100/cost_spent_on_exposed_group
+        ) +
+  geom_boxplot() +
+stat_summary(fun.data = n_fun, geom = "text", size = 2) +
+    theme_bw() +
+    theme(legend.position="none",
+          axis.text.x=element_blank(),
+           axis.title.y = element_blank()
+          ) +
+    xlab("Region Type")+
+ #    scale_x_discrete(labels=my_xlab) +
+    ylab("Lift") +
+  coord_flip()
+
+ggplotly(p, tooltip = c("text"))
+```
+
+## Summary of Findings
+
+1. US + CA spent on a much larger scale than the rest of countries in AMER, yet obtained negative lift values and an overall lower range than AMER
+
+2.US + CA cost median over ten times median of the rest of AMER countries
+
+3. US + CA and EMEA regions had negative lifts 
+
+##Count of negative lifts by Region
+```{r}
+Final_CLS_2022_Study_List %>%
+  filter(channel == "Search") %>%
+  filter(tactic != "All") %>%
+  group_by(region_v2) %>%
+  summarise(Negative_Count = sum(absolute_lift < 0),
+            Percent_Negative = 100 * (sum(Negative_Count)/n()))
+```
+
+## Summarize Spend
+
+### Overall Spend - both Search and Non-Search
+```{r}
+Final_CLS_2022_Study_List %>% 
+  summarise(Overall_spend = sum(cost_spent_on_exposed_group),
+            Overall_Studies = n_distinct(study_id,quarter)
+            ) 
+```
+***
+### Search Data
+
+#### Overall Spend 
+```{r}
+Final_CLS_2022_Study_List %>% 
+  filter(channel == 'Search') %>% 
+  filter(tactic != 'All') %>% #filtering where tactic != All to exclude overall spend for each study. can also use tactic == 'All' to confirm totals add up 
+  summarise(Overall_spend = sum(cost_spent_on_exposed_group),
+            Overall_Studies = n_distinct(study_id,quarter)
+            ) 
+```
+***
+#### Spend per Study 
+Study 22 had maximum spend at over 5 million
+```{r}
+Final_CLS_2022_Study_List %>%
+  filter(channel == "Search") %>%
+  filter(tactic == "All") %>%
+  select(study_id, cost_spent_on_exposed_group)
+```
+
+#### Overall Spend by PA 
+
+####Significantly more was spent on Google Cloud
+Maximum Spend on Google Cloud and minimum on Chromebook
+```{r}
+Final_CLS_2022_Study_List %>% 
+  filter(channel == 'Search') %>% 
+  filter(tactic != 'All') %>%
+  group_by(pa) %>% 
+  summarise(Overall_spend = sum(cost_spent_on_exposed_group),
+            Overall_Studies = n_distinct(study_id,quarter),
+            Average_Spend = mean(cost_spent_on_exposed_group),
+            Overall_instances = n()
+            ) 
+```
+
+
+
+***
+### Significant Study % - Search Data
+
+#### About 92% of Search spend is Significant 
+```{r}
+Final_CLS_2022_Study_List %>% 
+  filter(channel == 'Search') %>% 
+  filter(tactic != 'All') %>% 
+  group_by(Significant_Spend) %>%
+  summarise(Overall_spend = sum(cost_spent_on_exposed_group))%>% 
+  mutate(Percent_spend = 100 * Overall_spend/(sum(Overall_spend)))
+```
+***
+
+
+
+#### Significant Spend by PA 
+```{r}
+Final_CLS_2022_Study_List %>%
+  filter(channel == 'Search') %>%
+  filter(tactic != 'All') %>%
+  group_by(pa, Significant_Spend) %>%
+  summarise(Overall_spend = sum(cost_spent_on_exposed_group))%>% 
+  mutate(Percent_spend = 100 * Overall_spend/(sum(Overall_spend)))
+```
+***
+#### Grouped Bar Chart for Significant Spend by PA
+```{r}
+Final_CLS_2022_Study_List %>%
+  filter(channel == 'Search') %>%
+  filter(tactic != 'All') %>%
+  group_by(pa, Significant_Spend) %>%
+  summarise(Overall_spend = sum(cost_spent_on_exposed_group))%>% 
+  ggplot(aes(x=pa, y=Overall_spend, fill=as.factor(Significant_Spend))) + 
+  geom_bar(position="dodge", stat="identity") +
+  xlab("PA") +
+  ylab("Total Spend") +
+  ggtitle("Significant Spend by PA") +
+  coord_flip() +
+  theme_minimal()
+  
+```
+
+***
+
+#### Grouped Bar Chart Significant Studies by PA - excluding PA's that are 100% Significant - Chromebook & Google Cloud
+```{r}
+Final_CLS_2022_Study_List %>%
+ filter(channel == 'Search') %>%
+ filter(tactic != 'All') %>%
+ filter(!pa %in% c("Chromebook", "Google Cloud")) %>%
+ group_by(pa, Significant_Spend) %>%
+  summarise(Overall_spend = sum(cost_spent_on_exposed_group))%>% 
+  ggplot(aes(x=pa, y=Overall_spend, fill=as.factor(Significant_Spend))) + 
+  geom_bar(position="dodge", stat="identity") +
+  xlab("PA") +
+  ylab("Total Spend") +
+  ggtitle("Spend by PA and Significant Spend Excluding Chromebook & Google Cloud") +
+  coord_flip() +
+  theme_minimal()
+```
+***
+### Summarize Findings
+1. All of spend on Google Cloud and Chromebook was significant
+
+2. Pixel was the only PA with majority of spend as non-significant, keep in mind it only appeared in 7 instances of the data 
+
+3. Google Cloud averaged highest spend and had largest overall spend 
+
+#### Significant Spend by Region
+```{r}
+Final_CLS_2022_Study_List %>%
+  filter(channel == 'Search') %>%
+  filter(tactic != 'All') %>%
+  group_by(region_v2, Significant_Spend) %>%
+  summarise(Overall_spend = sum(cost_spent_on_exposed_group))%>% 
+  mutate(Percent_spend = 100 * Overall_spend/(sum(Overall_spend)))
+```
+#### Bar Chart of Significant Spend by Region
+```{r}
+Final_CLS_2022_Study_List %>%
+  filter(channel == 'Search') %>%
+  filter(tactic != 'All') %>%
+  group_by(region_v2, Significant_Spend) %>%
+  summarise(Overall_spend = sum(cost_spent_on_exposed_group)) %>% 
+  ggplot(aes(x=region_v2, y=Overall_spend, fill=as.factor(Significant_Spend))) + 
+  geom_bar(position="dodge", stat="identity") +
+  xlab("Region") +
+  ylab("Total Spend") +
+  ggtitle("Spend by Region and Significant Spend") +
+  coord_flip() +
+  theme_minimal()
+```
+***
+
+
+Non-Significant Studies too low to be seen on barplot
+#### Bar Chart of Significant Spend by Region - Excluding US + CA
+```{r}
+Final_CLS_2022_Study_List %>%
+  filter(channel == 'Search') %>%
+  filter(tactic != 'All') %>%
+  filter(!region_v2 %in% c('AMER_USCA')) %>%
+  group_by(region_v2, Significant_Spend) %>%
+  summarise(Overall_spend = sum(cost_spent_on_exposed_group))%>% 
+  ggplot(aes(x=region_v2, y=Overall_spend, fill=as.factor(Significant_Spend))) + 
+  geom_bar(position="dodge", stat="identity") +
+  xlab("Region") +
+  ylab("Total Spend") +
+  ggtitle("Spend by Region and Significant Spend Excluding CA & US") +
+  coord_flip() +
+  theme_minimal()
+```
+
+#### Significant Spend by Tactic 
+```{r}
+Final_CLS_2022_Study_List %>%
+  filter(channel == 'Search') %>%
+  filter(tactic != 'All') %>%
+  group_by(tactic, Significant_Spend) %>%
+  summarise(Overall_spend = sum(cost_spent_on_exposed_group))%>% 
+  mutate(Percent_spend = 100 * Overall_spend/(sum(Overall_spend)))
+```
+#### Bar chart of Significant Spend by Tactic 
+```{r}
+Final_CLS_2022_Study_List %>%
+  filter(channel == 'Search') %>%
+  filter(tactic != 'All') %>%
+  group_by(tactic, Significant_Spend) %>%
+  summarise(Overall_spend = sum(cost_spent_on_exposed_group))%>% 
+  ggplot(aes(x=tactic, y=Overall_spend, fill=as.factor(Significant_Spend))) + 
+  geom_bar(position="dodge", stat="identity") +
+  xlab("Tactic") +
+  ylab("Total Spend") +
+  ggtitle("Significant Spend by Tactic") +
+  coord_flip() +
+  theme_minimal()
+  
+```
+### Summary of Findings
+1. All regions with the exception of CA + US were 99%+ Significant, CA + US were 84% significant
+
+2. Significant Spend % within SKWS was highest when compared to other tactics 
+
+###3D Scatterplots to see relationships between spend, duration and lift
+```{r}
+#install.packages("scatterplot3d")
+#install.packages("rgl")
+#install.packages("rdlwidget")
+#library(scatterplot3d)
+#library("rgl")
+
+
+#Scatter3D_Graph <- Final_CLS_2022_Study_List%>%
+ # filter(channel == 'Search') %>%
+  #filter(tactic !='All')
+  
+scatterplot3d(Scatter3D_Graph$cost_spent_on_exposed_group,
+              Scatter3D_Graph$duration,
+              Scatter3D_Graph$absolute_lift,
+              main="3D Scatterplot",
+              angle=55,
+              xlab = "Cost Spent",
+              ylab = "Duration",
+              zlab = "Lift")
+
+plot3d(Scatter3D_Graph$cost_spent_on_exposed_group,
+              Scatter3D_Graph$duration,
+              Scatter3D_Graph$absolute_lift,
+              main="3D Scatterplot",
+              angle=55,
+              xlab = "Cost Spent",
+              ylab = "Duration",
+              zlab = "Lift")
+```
+
+
+##Scatterplot of Total Cost Spent vs. Absolute Lift for all Search
+```{r}
+Final_CLS_2022_Study_List %>%
+  filter(channel =='Search') %>%
+  filter(tactic != 'All')%>%
+  ggplot(aes(x = cost_spent_on_exposed_group, y = absolute_lift)) +
+  geom_point() +
+       xlab("Cost Spent") +
+       ylab("Lift") +
+       ggtitle("Cost vs. Lift")
+```
+#Scatterplot of Total Cost vs. Absolute Lift, for each individual study 
+```{r}
+Final_CLS_2022_Study_List %>%
+  filter(channel =='Search') %>%
+  filter(tactic == 'All')%>%
+  ggplot(aes(x = cost_spent_on_exposed_group, y = absolute_lift)) +
+  geom_point() +
+       xlab("Cost Spent") +
+       ylab("Lift") +
+       ggtitle("Cost vs. Lift")
+```
+
+
+
+##Scatterplot of Cost Spent vs. Absolute Lift, by Region
+```{r}
+Final_CLS_2022_Study_List %>%
+  filter(channel =='Search') %>%
+  filter(tactic != 'All')%>%
+  ggplot(aes(x = cost_spent_on_exposed_group, y = absolute_lift, color = region_v2)) +
+  geom_point() +
+       xlab("Cost Spent") +
+       ylab("Lift") +
+       ggtitle("Cost vs. Lift")
+```
+
+##Scatterplot of Cost Spent vs. Absolute Lift, by Conversion Group
+```{r}
+Final_CLS_2022_Study_List %>%
+  filter(channel =='Search') %>%
+  filter(tactic != 'All')%>%
+  ggplot(aes(x = cost_spent_on_exposed_group, y = absolute_lift, color = grouped_conversion)) +
+  geom_point() +
+       xlab("Cost Spent") +
+       ylab("Lift") +
+       ggtitle("Cost vs. Lift")
+```
+## Summary of Findings
+1. Majority of studies with low cost and high lift are Desktop Downloads 
+
+2. US + CA tends to be high cost, low lift 
+
+3. Desktop Downloads conversion has lowest spend with highest lift 
+
+##Scatterplot of Cost Spent vs. Absolute Lift, by Year
+
+### Generally, 2022 has higher range in spend with a large range in lift than 2021 
+```{r}
+Final_CLS_2022_Study_List %>%
+  filter(channel =='Search') %>%
+  filter(tactic != 'All')%>%
+  ggplot(aes(x = cost_spent_on_exposed_group, y = absolute_lift, color = as.factor(year))) +
+  geom_point() +
+       xlab("Cost Spent") +
+       ylab("Lift") +
+       ggtitle("Cost vs. Lift")
+```
+
+##Scatterplot of Cost Spent vs Absolute Lift, by Significant Spend 
+```{r}
+Final_CLS_2022_Study_List %>%
+  filter(channel =='Search') %>%
+  filter(tactic != 'All')%>%
+  ggplot(aes(x = cost_spent_on_exposed_group, y = absolute_lift, color = as.factor(Significant_Spend))) +
+  geom_point() +
+       xlab("Cost Spent") +
+       ylab("Lift") +
+       ggtitle("Cost vs. Lift Search")
+```
+
+##Scatterplot of Duration vs. Cost Spent for all Search
+### Not as linear as expected 
+```{r}
+Final_CLS_2022_Study_List %>%
+  filter(channel =='Search') %>%
+  filter(tactic == 'All')%>%
+  ggplot(aes(x = duration, y = cost_spent_on_exposed_group)) +
+  geom_point() +
+       xlab("Duration") +
+       ylab("Cost") +
+       ggtitle("Duration vs. Cost")
+
+#Getting study with max cost 
+Final_CLS_2022_Study_List %>%
+  filter(channel == "Search") %>%
+  filter(tactic == "All") %>%
+  filter(cost_spent_on_exposed_group == max(cost_spent_on_exposed_group)) %>%
+  select(study_id)
+
+#Getting study with max duration
+Final_CLS_2022_Study_List %>%
+  filter(channel == "Search") %>%
+  filter(tactic == "All") %>%
+  filter(duration == max(duration)) %>%
+  select(study_id)
+
+```
+
+##Scatterplot of Duration vs. Lift, by Region
+```{r}
+Final_CLS_2022_Study_List %>%
+  filter(channel =='Search') %>%
+  filter(tactic != 'All')%>%
+  ggplot(aes(x = duration, y = absolute_lift, color = region_v2)) +
+  geom_point() +
+       xlab("Duration") +
+       ylab("Lift") +
+       ggtitle("Duration vs. Lift")
+```
+
+##Scatterplot of Duration vs. Lift, by PA
+```{r}
+Final_CLS_2022_Study_List %>%
+  filter(channel =='Search') %>%
+  filter(tactic != 'All')%>%
+  ggplot(aes(x = duration, y = absolute_lift, color = pa)) +
+  geom_point() +
+       xlab("Duration") +
+       ylab("Lift") +
+       ggtitle("Duration vs. Lift") 
+```
+## Summary of Findings
+
+1.Study 22 has max cost spent, yet on the lower range of duration
+
+2.Study 1 has max duration and very low cost 
+
+## Scatterplots on Individual PA's
+### Scatterplots of Cost Spent vs. Lift for each PA
+```{r}
+pa_plot <- function(pa2) {
+  plot_scatter <- Final_CLS_2022_Study_List %>%
+    filter(channel == 'Search') %>%
+    filter(tactic != 'All') %>%
+    filter(pa == pa2) %>%
+    ggplot(aes(x = cost_spent_on_exposed_group, y = absolute_lift, color =region_v2)) +
+    geom_point() +
+       xlab("Cost") +
+       ylab("Lift") +
+       ggtitle(paste(pa2, " Cost vs. Lift"))
+print(plot_scatter)
+}
+
+pa_columns <- c("Chrome", "Chromebook", "DSM", "Google Cloud", "Pixel")
+
+for (i in pa_columns) {
+  pa_plot(i)
+} 
+
+
+```
+## Summary of Findings
+1. Most linear trends seem to be Chromebook, DSM and Google Cloud
+
+2. DSM only contains AMER regions
+
+3. Chrome costs remain low with high lift, performed worst in US + CA region 
+
+4. For Chrome, Chromebook and Google Cloud, it generally requires higher cost for lift in US + CA regions
+
+### Scatterplots of Cost Spent vs. Lift for each Region
+```{r}
+region_plot <- function(region2) {
+  plot_scatter <- Final_CLS_2022_Study_List %>%
+    filter(channel == 'Search') %>%
+    filter(tactic != 'All') %>%
+    filter(region_v2 == region2) %>%
+    ggplot(aes(x = cost_spent_on_exposed_group, y = absolute_lift, color = pa)) +
+    geom_point() +
+       xlab("Cost") +
+       ylab("Lift") +
+       ggtitle(paste(region2, " Cost vs. Lift"))
+print(plot_scatter)
+}
+
+
+region_cols <- c("AMER","AMER_USCA", "AO", "APAC", "EMEA")
+for (i in region_cols) {
+  region_plot(i)
+}
+```
+***
+## Summary of Findings
+1. EMEA region has highest lift with low costs
+
+2. In all regions Chrome seemed to be highest performing, with low costs resulting in high lift 
+
+3. US + CA cost vs. lift relationship much more dispersed than rest of AMER region
+
+4. Google Cloud seems to require significant cost for lift across all regions when compared to all pa's 
+
+## Chrome data
+```{r}
+Final_CLS_2022_Study_List %>%
+  filter(channel =='Search') %>%
+  filter(tactic != 'All')%>%
+  filter(pa == 'Chrome') %>%
+  summary()
+```
+ ***
+```{r}
+Final_CLS_2022_Study_List %>%
+  filter(channel =='Search') %>%
+  filter(tactic != 'All')%>%
+  filter(pa == 'Chrome') %>% 
+  ggplot(aes(x = duration, y = absolute_lift)) +
+  geom_point() +
+       xlab("Duration") +
+       ylab("Lift") +
+       ggtitle("Duration vs. Lift")
+```
+```{r}
+Final_CLS_2022_Study_List %>%
+  filter(channel =='Search') %>%
+  filter(tactic != 'All')%>%
+  filter(pa == 'Chrome') %>% 
+  ggplot(aes(x = duration, y = cost_spent_on_exposed_group)) +
+  geom_point() +
+       xlab("Duration") +
+       ylab("Cost") +
+       ggtitle("Duration vs. Cost")
+```
+##Summary of Findings
+1. Duration seems to be either short or long, and doesnt seem to have any apparent effect on cost or lift, with only a slight increase in lift for longer studies
+
+2. For Chrome data the duration was not a significant factor in lift 
+
+# Advanced EDA
+
+```{r}
+Final_CLS_2022_Study_List[c("year","quarter","region_v2","pa","tactic","Significant_Spend", "channel")] %>%
+  filter(channel =="Search") %>%
+  filter(tactic != "All") %>%
+  plot_bar(ncol =3)
+  
+```
+## Percentage of each variable by PA
+```{r}
+Final_CLS_2022_Study_List[c("year","quarter","region_v2","pa","tactic","Significant_Spend", "channel")] %>%
+  filter(channel =="Search") %>%
+  filter(tactic != "All") %>%
+  plot_bar(by = "pa")
+```
+***
+##Frequency and Percentage for each variable 
+```{r}
+Final_CLS_2022_Study_List[c("year","quarter","region_v2","pa","tactic","Significant_Spend", "channel")] %>%
+  filter(channel == "Search") %>%
+  filter(tactic != "All") %>%
+  ExpCatViz()
+  
+```
+
+***
+# Visualizing % of Significant Spend by Grouped Conversion, Tactic and Region using ExpCatViz
+## % of Significant Spend by Grouped Conversion
+```{r}
+ExpCatViz(
+  Final_CLS_2022_Study_List %>%
+    filter(channel == "Search") %>%
+    filter(tactic != "All") %>%
+    select(grouped_conversion, Significant_Spend),
+  target="grouped_conversion")
+
+```
+
+***
+## % Significant Spend by Tactic
+```{r}
+ExpCatViz(
+  Final_CLS_2022_Study_List %>%
+    filter(channel == "Search") %>%
+    filter(tactic != "All") %>%
+    select(tactic, Significant_Spend),
+  target="tactic")
+```
+***
+## % Significant Spend by Region
+```{r}
+ExpCatViz(
+  Final_CLS_2022_Study_List %>%
+    filter(channel == "Search") %>%
+    filter(tactic != "All") %>%
+    select(region_v2, Significant_Spend),
+  target="region_v2")
+```
+***
+## % of Significant Spend by PA with p-values 
+```{r}
+Final_CLS_2022_Study_List %>%
+  filter(channel == "Search") %>%
+  filter(tactic != "All") %>%
+  ggbarstats(
+    x = Significant_Spend,
+    y = pa,
+    label = "both"
+  )
+```
+***
+## % of Significant Spend by Region with p-values
+```{r}
+Final_CLS_2022_Study_List %>%
+  filter(channel == "Search") %>%
+  filter(tactic != "All") %>%
+  ggbarstats(
+    x = Significant_Spend,
+    y = region_v2,
+    label = "both"
+  )
+```
+***
+## Stats table of all variables in Search
+```{r}
+dlookr::describe(Final_CLS_2022_Study_List %>%
+                   filter(channel == "Search") %>%
+                filter(tactic != "All")) %>%
+  flextable()
+```
+***
+## Stats table of all variables in Search by pa 
+```{r}
+Final_CLS_2022_Study_List %>%
+  filter(channel == "Search") %>%
+  filter(tactic != "All") %>%
+  group_by(pa) %>%
+  select(treatment_user_count, exposed, control_user_count, scaled_control, control, scaling_factor,
+         cost_spent_on_exposed_group, absolute_lift, relative_lift, duration, pa) %>%
+  univar_numeric() %>%
+  knitr::kable()
+```
+***
+## Stats table of all variables in Search data, includes more than above tables like min, max and # of outliers 
+```{r}
+Final_CLS_2022_Study_List %>%
+  filter(channel == "Search") %>%
+  filter(tactic != "All") %>%
+  group_by(pa) %>%
+  select(treatment_user_count, exposed, control_user_count, scaled_control, control, scaling_factor,
+         cost_spent_on_exposed_group, absolute_lift, relative_lift, duration, pa) %>%
+  diagnose_numeric() %>%
+  flextable()
+```
+***
+
+##Summary of Findings
+1. Pixel PA had lowest average lift but highest average duration
+
+2. Chrome PA had highest average and median lift but lowest average  and median cost 
+## Histogram of numeric features in Search data 
+```{r}
+Final_CLS_2022_Study_List %>% 
+  filter(channel == "Search") %>%
+  filter(tactic != "All") %>%
+  select(absolute_lift, cost_spent_on_exposed_group, duration, relative_lift) %>%
+  plot_histogram(ncol =2)
+```
+
+***
+## Quantile-Quantile plots per variable to check for normality in order to determine appropriate statistical tests
+### The closer to the diagonal line the closer to normal distribution
+```{r}
+Final_CLS_2022_Study_List%>%
+  filter(channel == "Search") %>%
+  filter(tactic != "All") %>%
+  select(absolute_lift, cost_spent_on_exposed_group, relative_lift, duration) %>%
+  plot_qq()
+```
+***
+## Quantile-Quantile plot by PA
+```{r}
+Final_CLS_2022_Study_List%>%
+  filter(channel == "Search") %>%
+  filter(tactic != "All") %>%
+  select(absolute_lift, cost_spent_on_exposed_group, relative_lift, duration, pa, grouped_conversion, region_v2) %>%
+  plot_qq(by = "pa")
+```
+
+***
+## Normality Diagnosis Plots of Absolute Lift by PA
+```{r}
+## Diagnosis plots let you see how distributions would change with log and sqrt transformation in case normality isn't met
+Final_CLS_2022_Study_List %>%
+  filter(channel == "Search") %>%
+  filter(tactic != "All") %>%
+  group_by(pa) %>%
+  plot_normality(absolute_lift)
+```
+
+## Normality Diagnosis Plots of Cost Spent by PA
+```{r}
+Final_CLS_2022_Study_List %>%
+  filter(channel == "Search") %>%
+  filter(tactic != "All") %>%
+  group_by(pa) %>%
+  plot_normality(cost_spent_on_exposed_group)
+```
+
+
+***
+## Boxplots of absolute lift, cost spent, and relative lift across all pa's
+```{r}
+Final_CLS_2022_Study_List %>%
+  filter(channel == "Search") %>%
+  filter(tactic != "All") %>%
+  select(absolute_lift, cost_spent_on_exposed_group, relative_lift, pa, region_v2, grouped_conversion) %>%
+plot_boxplot(by = "pa")
+```
+***
+
+## Distributions of absolute lift for each pa, including comparison between pa distributions and p-values
+```{r}
+#install.packages("PMCMRplus")
+
+Final_CLS_2022_Study_List %>%
+  filter(channel ==  "Search") %>%
+  filter(tactic != "All") %>%
+  select(absolute_lift, cost_spent_on_exposed_group, pa, region_v2, grouped_conversion) %>%
+  ggbetweenstats(x = pa, y = absolute_lift, type = "np")
+```
+***
+Findings:
+1. All differences in distributions of absolute lift between pa's are significant 
+
+## Distributions of absolute lift for each pa, excluding Chrome
+```{r}
+Final_CLS_2022_Study_List %>%
+  filter(channel ==  "Search") %>%
+  filter(tactic != "All") %>%
+  filter(pa != "Chrome") %>%
+  select(absolute_lift, cost_spent_on_exposed_group, pa, region_v2, grouped_conversion) %>%
+  ggbetweenstats(x = pa, y = absolute_lift, type = "np")
+```
+## Distributions of absolute lift for each pa, excluding Chrome and Google Cloud
+```{r}
+Final_CLS_2022_Study_List %>%
+  filter(channel ==  "Search") %>%
+  filter(tactic != "All") %>%
+  filter(!pa %in% c("Chrome", "Google Cloud")) %>%
+  select(absolute_lift, cost_spent_on_exposed_group, pa, region_v2, grouped_conversion) %>%
+  ggbetweenstats(x = pa, y = absolute_lift, type = "np")
+```
+
+## Distributions of absolute lift for each region, including comparison between region distributions and p-values
+```{r}
+Final_CLS_2022_Study_List %>%
+  filter(channel ==  "Search") %>%
+  filter(tactic != "All") %>%
+  select(absolute_lift, cost_spent_on_exposed_group, pa, region_v2, grouped_conversion) %>%
+  ggbetweenstats(x = region_v2, y = absolute_lift, type = "np")
+```
+***
+```{r}
+Final_CLS_2022_Study_List %>%
+  filter(channel ==  "Search") %>%
+  filter(tactic != "All") %>%
+  select(absolute_lift, cost_spent_on_exposed_group, pa, region_v2, grouped_conversion) %>%
+  ggbetweenstats(x = pa, y = cost_spent_on_exposed_group, type = "np")
+```
+***
+```{r}
+Final_CLS_2022_Study_List %>%
+  filter(channel ==  "Search") %>%
+  filter(tactic != "All") %>%
+  filter(pa != "DSM") %>%
+  select(absolute_lift, cost_spent_on_exposed_group, pa, region_v2, grouped_conversion) %>%
+  ggbetweenstats(x = pa, y = cost_spent_on_exposed_group, type = "np")
+```
+***
+```{r}
+Final_CLS_2022_Study_List %>%
+  filter(channel == "Search") %>%
+  filter(tactic != "All") %>%
+  correlate(cost_spent_on_exposed_group, absolute_lift)
+```
+***
+```{r}
+correlate_func <- function(pa_val) {
+  plot_corr<- Final_CLS_2022_Study_List %>%
+  filter(channel == "Search") %>%
+  filter(tactic != "All") %>%
+  filter(pa == pa_val) %>%
+  correlate(cost_spent_on_exposed_group, absolute_lift)
+  print(plot_corr)
+}
+
+pa_vals = c("Chrome", "Chromebook", "DSM", "Pixel", "Google Cloud")
+
+for (i in pa_vals) {
+  correlate_func(i)
+}
+```
+Findings
+1. All pa's except Pixel have correlation coefficients >0.5 for absolute lift and cost spent
+2. Chromebook and DSM have over .90 correlation between lift and cost
+3. Pixel data shows negative correlation between lift and cost - only has 7 datapoints
+***
+##TSNE graph by grouped conversion
+```{r}
+Final_CLS_2022_Study_List_2 <- 
+  Final_CLS_2022_Study_List %>%
+  filter(channel =="Search") %>%
+  filter(tactic != "All") %>%
+  select(-c(study_id, year, quarter)) %>%
+  mutate(ID = row_number())
+
+#extracting categorical columns 
+Final_CLS_2022_Study_List_meta <- Final_CLS_2022_Study_List_2 %>%
+  select(ID, pa, tactic, grouped_conversion, region_v2)
+
+#tSNE_fit <- Final_CLS_2022_Study_List_2 %>%
+ # select(ID,treatment_user_count, exposed, control_user_count, control, scaling_factor,
+  #       cost_spent_on_exposed_group, absolute_lift, relative_lift, Significant_Spend) %>%
+  #column_to_rownames("ID") %>%
+  #scale() %>%
+  #Rtsne()
+
+#Selecting only numerical columns and fitting the data 
+tSNE_fit <- Final_CLS_2022_Study_List_2 %>%
+  select(ID,treatment_user_count, exposed, cost_spent_on_exposed_group, absolute_lift, relative_lift, Significant_Spend) %>%
+  column_to_rownames("ID") %>%
+  scale() %>%
+  Rtsne()
+
+#turning results into dataframe 
+tSNE_df <- tSNE_fit$Y %>%
+  as.data.frame() %>%
+  rename(tSNE1="V1", tSNE2="V2") %>%
+  mutate(ID = row_number())
+
+#joining categorical and numerical columns
+tSNE_df <- tSNE_df %>%
+  inner_join(Final_CLS_2022_Study_List_meta, by = "ID")
+
+tSNE_df %>% head()
+
+tSNE_df %>%
+  ggplot(aes(x = tSNE1,
+             y = tSNE2,
+             color = grouped_conversion)) +
+  geom_point() +
+  theme(legend.position="bottom")
+  
+```
+## tSNE Graph by region 
+```{r}
+Final_CLS_2022_Study_List_2 <- 
+  Final_CLS_2022_Study_List %>%
+  filter(channel =="Search") %>%
+  filter(tactic != "All") %>%
+  select(-c(study_id, year, quarter)) %>%
+  mutate(ID = row_number())
+
+Final_CLS_2022_Study_List_meta <- Final_CLS_2022_Study_List_2 %>%
+  select(ID, pa, tactic, grouped_conversion, region_v2)
+
+#tSNE_fit <- Final_CLS_2022_Study_List_2 %>%
+ # select(ID,treatment_user_count, exposed, control_user_count, control, scaling_factor,
+  #       cost_spent_on_exposed_group, absolute_lift, relative_lift, Significant_Spend) %>%
+  #column_to_rownames("ID") %>%
+  #scale() %>%
+  #Rtsne()
+
+tSNE_fit <- Final_CLS_2022_Study_List_2 %>%
+  select(ID,treatment_user_count, exposed, cost_spent_on_exposed_group, absolute_lift, relative_lift, Significant_Spend) %>%
+  column_to_rownames("ID") %>%
+  scale() %>%
+  Rtsne()
+
+tSNE_df <- tSNE_fit$Y %>%
+  as.data.frame() %>%
+  rename(tSNE1="V1", tSNE2="V2") %>%
+  mutate(ID = row_number())
+
+tSNE_df <- tSNE_df %>%
+  inner_join(Final_CLS_2022_Study_List_meta, by = "ID")
+
+tSNE_df %>% head()
+
+tSNE_df %>%
+  ggplot(aes(x = tSNE1,
+             y = tSNE2,
+             color = pa)) +
+  geom_point() +
+  theme(legend.position="bottom")
+```
+
+##Stats table of features wit and witout Outliers - calculated using IQR method
+```{r}
+Final_CLS_2022_Study_List %>%
+  filter(channel == "Search") %>%
+  filter(tactic != "All") %>%
+  diagnose_outlier() %>%
+  flextable()
+```
+*** 
+##Plotting Variables with and without Outliers
+```{r}
+Final_CLS_2022_Study_List %>%
+  filter(channel == "Search") %>%
+  filter(tactic != "All") %>%
+  dplyr::select(absolute_lift, cost_spent_on_exposed_group) %>%
+  plot_outlier()
+  
+```
+
+*** 
+## Plotting variables with and without outliers - excluding chrome data 
+```{r}
+Final_CLS_2022_Study_List %>%
+  filter(channel == "Search") %>%
+  filter(tactic != "All") %>%
+  filter(pa != "Chrome") %>%
+  dplyr::select(absolute_lift, cost_spent_on_exposed_group) %>%
+  plot_outlier()
+```
+***
+#Plotting variables with and without outliers - Chrome data 
+```{r}
+Final_CLS_2022_Study_List %>%
+  filter(channel == "Search") %>%
+  filter(tactic != "All") %>%
+  filter(pa == "Chrome") %>%
+  dplyr::select(absolute_lift, cost_spent_on_exposed_group) %>%
+  plot_outlier()
+```
+
+***
+## Chrome data 
+Chrome seems to be outperforming all other pa's
+```{r}
+Final_CLS_2022_Study_List %>%
+  filter(channel == "Search") %>%
+  filter(tactic != "All")
+```
+
+```{r}
+Final_CLS_2022_Study_List %>%
+  filter(channel == "Search") %>%
+  filter(tactic == "All") %>%
+  filter(absolute_lift == max(absolute_lift)) %>%
+  select(study_id, pa)
+```
+
+```{r}
+Final_CLS_2022_Study_List %>%
+  filter(channel == "Search") %>%
+  filter(tactic == "All") %>%
+  filter(cost_spent_on_exposed_group == max(cost_spent_on_exposed_group)) %>%
+  select(study_id, pa)
+```
+## Chrome data 
+
+```{r}
+Final_CLS_2022_Study_List %>%
+  filter(channel == "Search") %>%
+  filter(tactic != "All") %>%
+  filter(pa == "Chrome") %>%
+  select(absolute_lift, cost_spent_on_exposed_group, relative_lift, pa, region_v2, grouped_conversion) %>%
+plot_boxplot(by = "region_v2")
+```
+***
+Since Chrome only contains Desktop Downloads, this could be contributing to why it has such high lift 
+```{r}
+Final_CLS_2022_Study_List %>%
+  filter(channel == "Search") %>%
+  filter(tactic != "All") %>%
+  filter(pa == "Chrome") %>%
+  select(absolute_lift, cost_spent_on_exposed_group, relative_lift, pa, region_v2, grouped_conversion) %>%
+plot_boxplot(by = "grouped_conversion")
+```
+***
+#seeing what regions are in Chrome 
+```{r}
+Final_CLS_2022_Study_List %>%
+  filter(channel == "Search") %>%
+  filter(tactic != "All") %>%
+  filter(pa == "Chrome") %>%
+  ggplot(aes(x = cost_spent_on_exposed_group, y = absolute_lift, color = region_v2)) +
+    geom_point() +
+       xlab("Cost") +
+       ylab("Lift") +
+       ggtitle("Cost vs. Lift")
+  
+```
+***
+```{r}
+Final_CLS_2022_Study_List %>%
+  filter(channel == "Search") %>%
+  filter(tactic != "All") %>%
+  filter(pa == "Chrome") %>%
+  group_by(region_v2) %>%
+  summarise(count_regions = n())
+```
+
+***
+```{r}
+Final_CLS_2022_Study_List %>%
+  filter(channel == "Search") %>%
+  filter(tactic != "All") %>%
+  filter(pa == "Chrome") %>%
+  group_by(Significant_Spend) %>%
+  summarise(total_count = n())
+```
+```{r}
+scatter_stats_pa <- function(pa_val) {
+  plot <- Final_CLS_2022_Study_List %>%
+  filter(channel == "Search") %>%
+  filter(tactic != "All") %>%
+  filter(pa == pa_val) %>%
+  ggscatterstats(
+    x = cost_spent_on_exposed_group,
+    y = absolute_lift, 
+    type = "np")
+  print(plot)
+}
+for (i in pa_vals) {
+  scatter_stats_pa(i)
+}
+```
+
+```{r}
+scatter_stats_region <- function(region_val) {
+  plot <- Final_CLS_2022_Study_List %>%
+  filter(channel == "Search") %>%
+  filter(tactic != "All") %>%
+  filter(region_v2 == region_val) %>%
+  ggscatterstats(
+    x = cost_spent_on_exposed_group,
+    y = absolute_lift, 
+    type = "np")
+  print(plot)
+}
+for (i in region_cols) {
+  scatter_stats_region(i)
+}
+```
+#Evaluating stats with and without Outliers for all PA's 
+
+### Chrome 
+```{r}
+Final_CLS_2022_Study_List %>%
+  filter(channel == "Search") %>%
+  filter(tactic != "All") %>%
+  filter(pa == "Chrome") %>%
+  select(treatment_user_count, exposed, control_user_count, cost_spent_on_exposed_group, absolute_lift) %>%
+  diagnose_outlier() %>%
+  flextable()
+```
+
+### Chromebook
+```{r}
+Final_CLS_2022_Study_List %>%
+  filter(channel == "Search") %>%
+  filter(tactic != "All") %>%
+  filter(pa == "Chromebook") %>%
+  select(treatment_user_count, exposed, control_user_count, cost_spent_on_exposed_group, absolute_lift) %>%
+  diagnose_outlier() %>%
+  flextable()
+```
+
+
+### DSM
+```{r}
+Final_CLS_2022_Study_List %>%
+  filter(channel == "Search") %>%
+  filter(tactic != "All") %>%
+  filter(pa == "Pixel") %>%
+  select(treatment_user_count, exposed, control_user_count, cost_spent_on_exposed_group, absolute_lift) %>%
+  diagnose_outlier() %>%
+  flextable()
+```
+
+### Pixel
+```{r}
+Final_CLS_2022_Study_List %>%
+  filter(channel == "Search") %>%
+  filter(tactic != "All") %>%
+  filter(pa == "Chrome") %>%
+  select(treatment_user_count, exposed, control_user_count, cost_spent_on_exposed_group, absolute_lift) %>%
+  diagnose_outlier() %>%
+  flextable()
+```
+
+### Google Cloud
+```{r}
+Final_CLS_2022_Study_List %>%
+  filter(channel == "Search") %>%
+  filter(tactic != "All") %>%
+  filter(pa == "Google Cloud") %>%
+  select(treatment_user_count, exposed, control_user_count, cost_spent_on_exposed_group, absolute_lift) %>%
+  diagnose_outlier() %>%
+  flextable()
+```
+```{r}
+#install.packages("gtsummary")
+```
+```{r}
+Final_CLS_2022_Study_List %>%
+  filter(channel == "Search") %>%
+  filter(tactic != "All") %>%
+  select(region_v2, pa, channel, tactic, grouped_conversion, cost_spent_on_exposed_group, absolute_lift) %>%
+  tbl_summary(by = pa) %>%
+  add_p()
+```
+
+***
+```{r}
+Search_no_tactic <- Final_CLS_2022_Study_List %>%
+  filter(channel == "Search") %>%
+  filter(tactic != "All") %>%
+  kruskal.test(absolute_lift ~ pa)
+```
+
+
+```{r}
+Search_no_tactic <- Final_CLS_2022_Study_List %>%
+  filter(channel == "Search") %>%
+  filter(tactic != "All")
+```
+
+
+```{r}
+kruskal.test(absolute_lift ~ pa, data = Search_no_tactic)
+```
+
+```{r}
+kruskal.test(absolute_lift ~ region_v2, data = Search_no_tactic)
+
+```
+
+```{r}
+pairwise.wilcox.test(Search_no_tactic$absolute_lift, Search_no_tactic$pa,
+                 p.adjust.method = "BH")
+```
+
