@@ -1,0 +1,1386 @@
+---
+title: "2022 CLS Data Summarization"
+author: "Essence Global Advanced Analytics Team"
+date: "`r Sys.Date()`"
+output:
+  html_notebook:
+    toc: yes
+    toc_float: yes
+    number_sections: no
+    theme: cerulean
+    highlight: zenburn
+    fig_caption: yes
+    df_print: paged
+
+---
+
+```{r setup, include=TRUE}
+knitr::opts_chunk$set(echo = TRUE)
+options(knitr.table.format = "html") 
+options(digits=5)
+options(scipen = 100)
+knitr::opts_chunk$set(tidy.opts=list(width.cutoff=80), tidy=TRUE)
+#install.packages("pacman")
+library(pacman) #for quick load/install of packages
+p_load(dplyr, readr, tidyverse,reticulate, lubridate,janitor, sqldf,googlesheets4)
+p_load(skimr,splitstackshape,stringr,rqdatatable)
+p_load(moments)
+p_load(kableExtra)
+p_load(ggplot2, plotly,echarts4r,ggpubr,forcats,scales,RColorBrewer)
+p_load(ggthemes)
+
+#Advanced EDA packages 
+library("Rtsne")
+library("DataExplorer") #used for basic stats, qq plots and bar-plots
+library("SmartEDA") #for more descriptive statistics 
+library("dlookr")
+library("ggstatsplot")
+library("flextable") #for nicer looking tables 
+library("summarytools")
+library("skimr")
+library("performance") #imputing outliers 
+```
+
+***
+ ["Advanced EDA Techniques"](https://yuzar-blog.netlify.app/posts/2021-01-09-exploratory-data-analysis-and-beyond-in-r-in-progress/) - Provides an overview of packages and functions used for advanced EDA techniques.
+ 
+# Data Summaries
+
+## *Read-in Google Sheet of Final Study Dataset*  
+
+[Final Dataset can be found here.](https://docs.google.com/spreadsheets/d/1N48rTeq7md0v8w8pG_8XIiuapPHQAeO5WoWIB3eaceI/edit#gid=14493513773) 
+
+Relabeling regions for countries where regions were 'NA' and replacing null values in country column to be 'US'
+
+Additionally, creating new region column to differentiate CA and US countries, and finally filtering out study that had 0 conversions. 
+
+```{r}
+Final_CLS_2022_Study_List <- read_csv("FinalDataset_2022_Update.csv") %>%
+  mutate(region = case_when(
+    country %in% c('CA', 'US', 'US + CA', 'BR', 'MX', 'CL', 'SPLATAM - (AR, CL, CO, MX, PE)',
+                   'LAC-Others (BO, CR, DO, EC, GT, HN, NI, PA, PR, PY, SV, UY)', 'LAC-Others (BO, CR, DO, EC, GT, HN, NI, PA, PY)') ~ 'AMER',
+    TRUE ~ region),
+
+  country = case_when(
+    is.na(country) ~ 'US', 
+    TRUE ~ country),
+  
+  
+  tactic_v2 = case_when(
+    tactic %in% c('BKWS') ~ 'BKWS',
+    TRUE ~ 'AO'),
+  
+  #search = case_when(
+    #channel == 'Search' ~ 'Search',
+    #TRUE ~ 'Non-Search'),
+  
+   region_v2 = case_when(
+    country %in% c('CA', 'US', 'US + CA') ~ 'AMER_USCA', TRUE ~ region)) %>%
+  
+  filter(exposed != 0) 
+```
+***
+
+```{r}
+#TBD
+#WRITING SHEETS WILL BE COMMENTED OUT UNLESS REFRESH IS NECESSARY
+#write_sheet(Final_CLS_2021_Study_List, ss = #'https://docs.google.com/spreadsheets/d/146_bmm-FgOeOQub3o4WVtt-9Aw8pqYvkQnwsHmRdZDs/edit#gid#=587747443',
+#          sheet = 'Final_Clean_Dataset_v2')
+
+skim(Final_CLS_2022_Study_List) %>%
+  as.tibble() %>%
+  select(skim_type, skim_variable,complete_rate)
+
+nrow(Final_CLS_2022_Study_List)
+
+```
+***
+
+## Create Group Conversion Events
+
+### Look at all current conversion events
+
+```{r}
+Final_CLS_2022_Study_List %>%
+  filter(channel =="Search") %>%
+  group_by(pa, conversion) %>% 
+  summarize(count = n()) %>% 
+    kbl() %>% 
+ kable_material(c("striped", "hover","condensed","responsive"),full_width = F,fixed_thead = T)
+```
+***
+## Creating Grouped conversion events
+
+```{r, warning=FALSE}
+
+Final_CLS_2022_Study_List =
+  Final_CLS_2022_Study_List %>% 
+ mutate(
+   parsed_type = parse_number(conversion),
+   grouped_conversion = case_when(
+   conversion %in% c('Chromebook Microsite Referral Clicks Q4 2015','Type 251422729 (Chromebooks Microsite Referral Clicks (Q4 2017))') ~ 'Chromebook Referrals',
+   conversion %in% c('Desktop Downloads','Type 11541547 (Desktop Download)') ~      
+     'Desktop Downloads',
+   pa == 'Pixel'~ 'Mobile Conversions',
+   pa == 'DSM' ~ 'Non-Mobile Device Conversions',
+   conversion == 'Type 302982954 (Lena - P Lead)' ~ 'Lena P Lead' , 
+    conversion == 'Type 288347008 (LENA - B Lead)' ~ 'Lena B Lead' ,
+    conversion == 'Type 288697653 (LENA - Q Lead)' ~ 'Lena Q Lead' ,
+   parsed_type == 330755641 ~ 'Microsite Conversions',
+   parsed_type == 14257803 ~ 'Enterprise Signups',
+   parsed_type == 289680712 ~ 'Google(iOs) First Open',
+   parsed_type ==  256522942 ~ 'YouTube TV - Web - Trial Start',
+  parsed_type ==  452391534 ~ 'Trial Signups Complete' ,
+   TRUE ~ conversion
+   )
+) 
+
+Final_CLS_2022_Study_List %>% 
+  filter(channel == 'Search') %>%
+  group_by(pa, grouped_conversion) %>% 
+  summarize(count = n())%>% 
+    kbl() %>% 
+ kable_material(c("striped", "hover","condensed","responsive"),full_width = F,fixed_thead = T)
+```
+
+***
+## Separating Chrome Data from Non-Chrome
+
+### Chrome 
+```{r}
+Chrome_CLS_2022 <- Final_CLS_2022_Study_List %>%
+  filter(channel == "Search") %>%
+  filter(pa == "Chrome")
+```
+
+
+### Non-Chrome
+```{r}
+Non_Chrome_CLS_2022 <- Final_CLS_2022_Study_List %>%
+  filter(channel == "Search") %>%
+  filter(pa != "Chrome")
+```
+
+## Chrome Data Count Overview {.tabset .tabset-fade .tabset-pills} 
+
+### Quarters in Chrome Data
+```{r}
+Chrome_CLS_2022 %>%
+  filter(tactic != "All") %>%
+  group_by(quarter) %>%
+  summarize(Overall_Data_Points = n()) %>%
+   kbl() %>% 
+ kable_material(c("striped", "hover","condensed","responsive"),full_width = F,fixed_thead = T)
+  #summarize(Overall_Studies = n()) %>%
+  #ggplot(aes(x=quarter, y=Overall_Studies, label = Overall_Studies)) + geom_bar(stat = 'identity') +
+  #ggtitle("Quarters in Chrome Studies") +
+    #xlab("Quarter") +
+    #ylab("Data Points") +
+  #geom_text(size = 4, color = 'white', hjust=1.5) +
+  #coord_flip() +
+  #theme_minimal()
+```
+### Regions in Chrome Data
+```{r}
+Chrome_CLS_2022 %>%
+filter(tactic != "All") %>%
+  group_by(region_v2) %>%
+  summarize(Overall_data_points = n()) %>%
+   kbl() %>% 
+ kable_material(c("striped", "hover","condensed","responsive"),full_width = F,fixed_thead = T)
+ #ggplot(aes(x=pa, y=Overall_points, label = Overall_points)) + geom_bar(stat = 'identity') +
+ #ggtitle("PA's in Search Studies") +
+  #xlab("PA") +
+   #ylab("Data Points") +
+#geom_text(size = 4, color = 'white', hjust=1.5) +
+ #coord_flip() +
+ #theme_minimal()
+```
+
+### Tactics in Chrome Data 
+```{r}
+Chrome_CLS_2022 %>%
+filter(tactic != "All") %>%
+  group_by(tactic) %>%
+  summarize(Overall_data_points = n()) %>%
+   kbl() %>% 
+ kable_material(c("striped", "hover","condensed","responsive"),full_width = F,fixed_thead = T)
+```
+
+
+## Non-Chrome Data Count Overview {.tabset .tabset-fade .tabset-pills} 
+
+### Quarters in Non-Chrome Data
+```{r}
+Non_Chrome_CLS_2022 %>%
+  group_by(quarter) %>%
+  summarize(Overall_Data_Points = n()) %>%
+   kbl() %>% 
+ kable_material(c("striped", "hover","condensed","responsive"),full_width = F,fixed_thead = T)
+```
+
+### Regions in Non-Chrome Data 
+```{r}
+Non_Chrome_CLS_2022 %>%
+filter(tactic != "All") %>%
+  group_by(region_v2) %>%
+  summarize(Overall_data_points = n()) %>%
+   kbl() %>% 
+ kable_material(c("striped", "hover","condensed","responsive"),full_width = F,fixed_thead = T)
+```
+
+### Tactics in Non-Chrome Data 
+```{r}
+Non_Chrome_CLS_2022 %>%
+filter(tactic != "All") %>%
+  group_by(tactic) %>%
+  summarize(Overall_data_points = n()) %>%
+   kbl() %>% 
+ kable_material(c("striped", "hover","condensed","responsive"),full_width = F,fixed_thead = T)
+```
+### PA's in Non-Chrome Data
+```{r}
+Non_Chrome_CLS_2022 %>%
+filter(tactic != "All") %>%
+  group_by(pa) %>%
+  summarize(Overall_data_points = n()) %>%
+   kbl() %>% 
+ kable_material(c("striped", "hover","condensed","responsive"),full_width = F,fixed_thead = T)
+```
+### Bar Chart PA's 
+```{r}
+#install.packages("RColorBrewer")
+Non_Chrome_CLS_2022 %>%
+  filter(tactic != "All") %>%
+  ggplot(aes(x=pa)) +
+  geom_bar() +
+  xlab("Count") + 
+  ylab("PA") + 
+  ggtitle("PA Count") +
+  coord_flip() +
+  theme_classic() +
+  scale_color_brewer(palette="Dark2")
+```
+
+## Overall Spend {.tabset .tabset-fade .tabset-pills} 
+
+### Spend in Chrome Data
+```{r}
+Chrome_CLS_2022 %>%
+  filter(tactic != "All") %>%
+  summarise(Overall_Spend = sum(cost_spent_on_exposed_group), Overall_Studies = n_distinct(study_id, quarter)) %>%
+  kbl() %>% 
+ kable_material(c("striped", "hover","condensed","responsive"),full_width = F,fixed_thead = T)
+
+```
+
+### Spend in Non-Chrome Data 
+```{r}
+Non_Chrome_CLS_2022 %>%
+  filter(tactic != "All") %>%
+  summarise(Overall_Spend = sum(cost_spent_on_exposed_group), Overall_Studies = n_distinct(study_id, quarter)) %>%
+  kbl() %>% 
+ kable_material(c("striped", "hover","condensed","responsive"),full_width = F,fixed_thead = T)
+```
+## Significant Spend - Chrome {.tabset .tabset-fade .tabset-pills} 
+
+### Chrome - Significant Spend 
+```{r}
+Chrome_CLS_2022 %>% 
+  filter(tactic != 'All') %>% 
+  group_by(Significant_Spend) %>%
+  summarise(Overall_spend = sum(cost_spent_on_exposed_group))%>% 
+  mutate(Percent_spend = 100 * Overall_spend/(sum(Overall_spend)))
+```
+### Chrome - Significant Spend by Region 
+```{r}
+Chrome_CLS_2022 %>%
+  filter(tactic != "All") %>%
+  group_by(region_v2, Significant_Spend) %>%
+  summarise(Overall_Spend = sum(cost_spent_on_exposed_group)) %>%
+  mutate(Percent_spend = 100 * Overall_Spend/(sum(Overall_Spend)))
+```
+### Chrome Bar Chart - Sig Spend by Region
+```{r}
+Chrome_CLS_2022 %>%
+  filter(tactic != 'All') %>%
+  group_by(region_v2, Significant_Spend) %>%
+  summarise(Overall_spend = sum(cost_spent_on_exposed_group))%>% 
+  ggplot(aes(x=region_v2, y=Overall_spend, fill=as.factor(Significant_Spend))) + 
+  geom_bar(position="dodge", stat="identity") +
+  xlab("Region") +
+  ylab("Total Spend") +
+  ggtitle("Significant Spend by Region - Chrome Data") +
+  coord_flip() +
+  theme_minimal()
+```
+### Chrome - Significant Spend by Tactic
+```{r}
+Chrome_CLS_2022 %>%
+  filter(tactic != 'All') %>%
+  group_by(tactic_v2, Significant_Spend) %>%
+  summarise(Overall_spend = sum(cost_spent_on_exposed_group))%>% 
+  ggplot(aes(x=tactic_v2, y=Overall_spend, fill=as.factor(Significant_Spend))) + 
+  geom_bar(position="dodge", stat="identity") +
+  xlab("Tactic") +
+  ylab("Total Spend") +
+  ggtitle("Significant Spend by Tactic - Chrome Data") +
+  coord_flip() +
+  theme_minimal()
+```
+
+### Summary of Findings
+1. 97% of Spend Significant in Chrome Search Data
+2. US + Canada resulted in 96% Sig Spend while the rest of countries in AMER were all 100% Significant
+3. BKWS was only tactic to have 100% Sig Spend  
+
+## Significant Spend - Non-Chrome {.tabset .tabset-fade .tabset-pills} 
+
+### Non-Chrome Data Significant Spend 
+```{r}
+Non_Chrome_CLS_2022 %>% 
+  filter(tactic != 'All') %>% 
+  group_by(Significant_Spend) %>%
+  summarise(Overall_spend = sum(cost_spent_on_exposed_group))%>% 
+  mutate(Percent_spend = 100 * Overall_spend/(sum(Overall_spend)))
+```
+### Non-Chrome - Significant Spend by Region 
+```{r}
+Non_Chrome_CLS_2022 %>%
+  filter(tactic != "All") %>%
+  group_by(region_v2, Significant_Spend) %>%
+  summarise(Overall_Spend = sum(cost_spent_on_exposed_group)) %>%
+  mutate(Percent_spend = 100 * Overall_Spend/(sum(Overall_Spend)))
+```
+
+### Non-Chrome Bar Chart - Sig Spend by Region
+```{r}
+Non_Chrome_CLS_2022 %>%
+  filter(tactic != 'All') %>%
+  group_by(region_v2, Significant_Spend) %>%
+  summarise(Overall_spend = sum(cost_spent_on_exposed_group))%>% 
+  ggplot(aes(x=region_v2, y=Overall_spend, fill=as.factor(Significant_Spend))) + 
+  geom_bar(position="dodge", stat="identity") +
+  xlab("Region") +
+  ylab("Total Spend") +
+  ggtitle("Significant Spend by Region - Non-Chrome Data") +
+  coord_flip() +
+  theme_minimal()
+```
+
+
+### Non-Chrome - Significant Spend by PA 
+```{r}
+Non_Chrome_CLS_2022 %>%
+  filter(tactic != 'All') %>%
+  group_by(pa, Significant_Spend) %>%
+  summarise(Overall_spend = sum(cost_spent_on_exposed_group))%>% 
+  ggplot(aes(x=pa, y=Overall_spend, fill=as.factor(Significant_Spend))) + 
+  geom_bar(position="dodge", stat="identity") +
+  xlab("PA") +
+  ylab("Total Spend") +
+  ggtitle("Significant Spend by PA - Non-Chrome Data") +
+  coord_flip() +
+  theme_minimal()
+```
+### Significant Spend by Tactic - Non-Chrome
+```{r}
+Non_Chrome_CLS_2022 %>%
+  filter(tactic != 'All') %>%
+  group_by(tactic_v2, Significant_Spend) %>%
+  summarise(Overall_spend = sum(cost_spent_on_exposed_group))%>% 
+  ggplot(aes(x=tactic_v2, y=Overall_spend, fill=as.factor(Significant_Spend))) + 
+  geom_bar(position="dodge", stat="identity") +
+  xlab("Tactic") +
+  ylab("Total Spend") +
+  ggtitle("Significant Spend by Tactic - Non-Chrome Data") +
+  coord_flip() +
+  theme_minimal()
+```
+
+
+### Summary of Findings 
+
+1. 92% Significant Spend in Non-Chrome Search Data
+2. Google Cloud and Chromebook had 100% Significant Spend
+3. Pixel had majority Non-Significant Spend
+
+## Chrome Cost-Lift Boxplots {.tabset .tabset-fade .tabset-pills} 
+### Cost Boxplot by Region and Tactic
+```{r fig.height = 10, fig.width = 10}
+#my_xlab <- paste(levels(Final_CLS_2021_Study_List$grouped_conversion),"\n(N=",table(Final_CLS_2021_Study_List$grouped_conversion),")",sep="")
+
+n_fun <- function(x){
+  return(data.frame(y = median(x), label = paste0("n = ",length(x))))
+}
+
+
+
+ Chrome_CLS_2022 %>%
+ 
+  filter(tactic != 'All') %>%
+
+  mutate(class = fct_reorder(as.factor(region_v2), cost_spent_on_exposed_group, .fun='median')) %>%
+  ggplot() +
+    aes(
+      x = reorder(as.factor(class),cost_spent_on_exposed_group),y = cost_spent_on_exposed_group, color = tactic_v2
+        #absolute_lift*100/cost_spent_on_exposed_group
+        ) +
+  geom_boxplot() +
+  stat_summary(fun.data = n_fun, geom = "text", size = 2) +
+    theme_bw() +
+    theme(legend.position="right",
+          axis.text.x=element_blank(),
+           axis.title.y = element_blank()
+          ) +
+    xlab("Region Type")+
+ #    scale_x_discrete(labels=my_xlab) +
+    ylab("Cost Spent on Exposed Group") +
+  ggtitle("Chrome Cost by Region and Tactic") + 
+ coord_flip()
+
+
+
+```
+### Lift Boxplot by Region and Tactic 
+```{r fig.height = 10, fig.width = 10}
+#my_xlab <- paste(levels(Final_CLS_2021_Study_List$grouped_conversion),"\n(N=",table(Final_CLS_2021_Study_List$grouped_conversion),")",sep="")
+
+n_fun <- function(x){
+  return(data.frame(y = median(x), label = paste0("n = ",length(x))))
+}
+
+
+
+ Chrome_CLS_2022 %>%
+  filter(channel =='Search') %>% 
+  filter(tactic != 'All') %>%
+
+  mutate(class = fct_reorder(as.factor(region_v2), absolute_lift, .fun='median')) %>%
+  ggplot() +
+    aes(
+      x = reorder(as.factor(class),absolute_lift),y = absolute_lift, color = tactic_v2
+        #absolute_lift*100/cost_spent_on_exposed_group
+        ) +
+  geom_boxplot() +
+  stat_summary(fun.data = n_fun, geom = "text", size = 2) +
+    theme_bw() +
+    theme(legend.position="right",
+          axis.text.x=element_blank(),
+           axis.title.y = element_blank()
+          ) +
+    xlab("Region")+
+ #    scale_x_discrete(labels=my_xlab) +
+    ylab("Lift") +
+  ggtitle("Chrome Lift by Region and Tactic") + 
+ coord_flip()
+
+
+
+```
+### Summary of Findings
+1. Maximum cost spent on US and Canada 
+2. EMEA and AMER_USCA are the only two regions that contain negative lifts
+3. AMER Median lift over 4 times that of AMER_USCA
+4. Both cost and Lift higher for BKWS compared to all other tactics across all regions 
+
+## Non-Chrome Cost-Lift Boxplots {.tabset .tabset-fade .tabset-pills} 
+
+### PA and Associated Conversion Event Table 
+```{r}
+Non_Chrome_CLS_2022 %>%
+  filter(tactic == "All") %>%
+  select(pa, grouped_conversion) %>%
+  summarise(PA = unique(pa), Conversion = unique(grouped_conversion))
+  #kbl() %>% 
+# kable_material(c("striped", "hover","condensed","responsive"),full_width = F,fixed_thead = T)
+```
+  
+
+### Cost Boxplot by Region and PA
+```{r fig.height = 10, fig.width = 10}
+#my_xlab <- paste(levels(Final_CLS_2021_Study_List$grouped_conversion),"\n(N=",table(Final_CLS_2021_Study_List$grouped_conversion),")",sep="")
+
+n_fun <- function(x){
+  return(data.frame(y = median(x), label = paste0("n = ",length(x))))
+}
+
+
+
+Non_Chrome_CLS_2022 %>%
+ 
+  filter(tactic != 'All') %>%
+
+  mutate(class = fct_reorder(as.factor(region_v2), cost_spent_on_exposed_group, .fun='median')) %>%
+  ggplot() +
+    aes(
+      x = reorder(as.factor(class),cost_spent_on_exposed_group),y = cost_spent_on_exposed_group, color= pa
+        #absolute_lift*100/cost_spent_on_exposed_group
+        ) +
+  geom_boxplot() +
+  stat_summary(fun.data = n_fun, geom = "text", size = 2) +
+    theme_bw() +
+    theme(legend.position="right",
+          axis.text.x=element_blank(),
+           axis.title.y = element_blank()
+          ) +
+    xlab("Region Type")+
+ #    scale_x_discrete(labels=my_xlab) +
+    ylab("Cost Spent on Exposed Group") +
+  ggtitle("Non-Chrome Search Cost by Region and PA") + 
+ coord_flip()
+
+
+
+```
+
+### Lift Boxplot by Region and PA
+```{r fig.height = 10, fig.width = 10}
+#my_xlab <- paste(levels(Final_CLS_2021_Study_List$grouped_conversion),"\n(N=",table(Final_CLS_2021_Study_List$grouped_conversion),")",sep="")
+
+n_fun <- function(x){
+  return(data.frame(y = median(x), label = paste0("n = ",length(x))))
+}
+
+
+
+ Non_Chrome_CLS_2022 %>%
+ 
+  filter(tactic != 'All') %>%
+
+  mutate(class = fct_reorder(as.factor(region_v2), absolute_lift, .fun='median')) %>%
+  ggplot() +
+    aes(
+      x = reorder(as.factor(class),absolute_lift),y = absolute_lift, color = pa
+        #absolute_lift*100/cost_spent_on_exposed_group
+        ) +
+  geom_boxplot() +
+  stat_summary(fun.data = n_fun, geom = "text", size = 2) +
+    theme_bw() +
+    theme(legend.position="right",
+          axis.text.x=element_blank(),
+           axis.title.y = element_blank()
+          ) +
+    xlab("Region Type")+
+ #    scale_x_discrete(labels=my_xlab) +
+    ylab("Lift") +
+  ggtitle("Non-Chrome Lift by Region and PA") + 
+ coord_flip()
+
+
+```
+
+### Google Cloud Lift Boxplot by Region and Tactic 
+```{r fig.height = 10, fig.width = 10}
+#my_xlab <- paste(levels(Final_CLS_2021_Study_List$grouped_conversion),"\n(N=",table(Final_CLS_2021_Study_List$grouped_conversion),")",sep="")
+
+n_fun <- function(x){
+  return(data.frame(y = median(x), label = paste0("n = ",length(x))))
+}
+
+
+
+ Non_Chrome_CLS_2022 %>%
+  filter(pa == "Google Cloud") %>%
+  filter(tactic != 'All') %>%
+
+  mutate(class = fct_reorder(as.factor(region_v2), absolute_lift, .fun='median')) %>%
+  ggplot() +
+    aes(
+      x = reorder(as.factor(class),absolute_lift),y = absolute_lift, color = tactic_v2
+        #absolute_lift*100/cost_spent_on_exposed_group
+        ) +
+  geom_boxplot() +
+  stat_summary(fun.data = n_fun, geom = "text", size = 2) +
+    theme_bw() +
+    theme(legend.position="right",
+          axis.text.x=element_blank(),
+           axis.title.y = element_blank()
+          ) +
+    xlab("Region Type")+
+ #    scale_x_discrete(labels=my_xlab) +
+    ylab("Lift") +
+  ggtitle("Google Cloud Lift by Region and Tactic") + 
+ coord_flip()
+
+
+```
+
+### Chromebook Lift Boxplot by Region and Tactic 
+```{r fig.height = 10, fig.width = 10}
+#my_xlab <- paste(levels(Final_CLS_2021_Study_List$grouped_conversion),"\n(N=",table(Final_CLS_2021_Study_List$grouped_conversion),")",sep="")
+
+n_fun <- function(x){
+  return(data.frame(y = median(x), label = paste0("n = ",length(x))))
+}
+
+
+
+ Non_Chrome_CLS_2022 %>%
+ 
+  filter(tactic != 'All') %>%
+   filter(pa == "Chromebook") %>%
+
+  mutate(class = fct_reorder(as.factor(region_v2), absolute_lift, .fun='median')) %>%
+  ggplot() +
+    aes(
+      x = reorder(as.factor(class),absolute_lift),y = absolute_lift, color = tactic_v2
+        #absolute_lift*100/cost_spent_on_exposed_group
+        ) +
+  geom_boxplot() +
+  stat_summary(fun.data = n_fun, geom = "text", size = 2) +
+    theme_bw() +
+    theme(legend.position="right",
+          axis.text.x=element_blank(),
+           axis.title.y = element_blank()
+          ) +
+    xlab("Region Type")+
+ #    scale_x_discrete(labels=my_xlab) +
+    ylab("Lift") +
+  ggtitle("Chromebook Lift by Region and Tactic") + 
+ coord_flip()
+
+
+```
+
+### DSM Lift Boxplot by Region and Tactic 
+```{r fig.height = 10, fig.width = 10}
+#my_xlab <- paste(levels(Final_CLS_2021_Study_List$grouped_conversion),"\n(N=",table(Final_CLS_2021_Study_List$grouped_conversion),")",sep="")
+
+n_fun <- function(x){
+  return(data.frame(y = median(x), label = paste0("n = ",length(x))))
+}
+
+
+
+ Non_Chrome_CLS_2022 %>%
+ 
+  filter(tactic != 'All') %>%
+  filter(pa == "DSM") %>%
+
+  mutate(class = fct_reorder(as.factor(region_v2), absolute_lift, .fun='median')) %>%
+  ggplot() +
+    aes(
+      x = reorder(as.factor(class),absolute_lift),y = absolute_lift, color = tactic_v2
+        #absolute_lift*100/cost_spent_on_exposed_group
+        ) +
+  geom_boxplot() +
+  stat_summary(fun.data = n_fun, geom = "text", size = 2) +
+    theme_bw() +
+    theme(legend.position="right",
+          axis.text.x=element_blank(),
+           axis.title.y = element_blank()
+          ) +
+    xlab("Region Type")+
+ #    scale_x_discrete(labels=my_xlab) +
+    ylab("Lift") +
+  ggtitle("DSM Lift by Region and Tactic") + 
+ coord_flip()
+
+
+```
+
+### Pixel Lift Boxplot by Region and Tactic 
+```{r fig.height = 10, fig.width = 10}
+#my_xlab <- paste(levels(Final_CLS_2021_Study_List$grouped_conversion),"\n(N=",table(Final_CLS_2021_Study_List$grouped_conversion),")",sep="")
+
+n_fun <- function(x){
+  return(data.frame(y = median(x), label = paste0("n = ",length(x))))
+}
+
+
+
+ Non_Chrome_CLS_2022 %>%
+ 
+  filter(tactic != 'All') %>%
+   filter(pa == "Pixel") %>%
+
+  mutate(class = fct_reorder(as.factor(region_v2), absolute_lift, .fun='median')) %>%
+  ggplot() +
+    aes(
+      x = reorder(as.factor(class),absolute_lift),y = absolute_lift, color = tactic_v2
+        #absolute_lift*100/cost_spent_on_exposed_group
+        ) +
+  geom_boxplot() +
+  stat_summary(fun.data = n_fun, geom = "text", size = 2) +
+    theme_bw() +
+    theme(legend.position="right",
+          axis.text.x=element_blank(),
+           axis.title.y = element_blank()
+          ) +
+    xlab("Region Type")+
+ #    scale_x_discrete(labels=my_xlab) +
+    ylab("Lift") +
+  ggtitle("Pixel Lift by Region and Tactic") + 
+ coord_flip()
+
+
+```
+
+### Summary of Findings
+1. Average Cost for all PA's higher in AMER_USCA than all other regions
+2. Across all regions Google Cloud had the highest spend 
+3. Google Cloud (Free Trial Submit Conversions) obtained highest lift across all regions
+4. AMER only contains DSM & Google Cloud, and AMER_CA contains all four PA's 
+5. Pixel had majority SKWS+AO Tactic, could be why it had lower lift than other PA's 
+6. Only in Google Cloud AMER and US+CA regions did BKWS obtain less lift than all other tactics 
+
+
+## Chrome - Cost vs. Lift Scatterplots {.tabset .tabset-fade .tabset-pills} 
+
+### Cost vs. Lift 
+#### Need to apply transformation to see if there's a linear trend 
+```{r}
+Chrome_CLS_2022 %>%
+  filter(tactic != "All") %>%
+  ggplot(aes(x = cost_spent_on_exposed_group,
+             y = absolute_lift,
+             )) +
+  geom_point() +
+       xlab("Cost Spent") +
+       ylab("Lift") +
+       ggtitle("Chrome Cost vs. Lift")
+```
+***
+### Log Transformation Cost vs. Lift by Region and Tactic 
+[How to interpret log transformed variables on a plot](https://data.library.virginia.edu/interpreting-log-transformations-in-a-linear-model/)
+
+```{r}
+Chrome_CLS_2022 %>%
+  filter(tactic != "All") %>%
+  ggplot(aes(x = log(cost_spent_on_exposed_group),
+             y = log(abs(absolute_lift)),
+             color = region_v2, shape = tactic_v2)) +
+  geom_point() +
+       xlab("Log(Cost Spent)") +
+       ylab("Log(Lift)") +
+       ggtitle("Chrome Cost vs. Lift")
+```
+
+***
+
+### AMER and AMER_USCA Log Cost vs. Lift by Tactic 
+```{r}
+Chrome_CLS_2022 %>%
+  filter(tactic != "All") %>%
+  filter(region_v2 %in% c("AMER", "AMER_USCA")) %>%
+  ggplot(aes(x = log(cost_spent_on_exposed_group),
+             y = log(abs(absolute_lift)),
+             color = region_v2, shape = tactic_v2)) +
+  geom_point() +
+       xlab("Log(Cost Spent)") +
+       ylab("Log(Lift)") +
+       ggtitle("Chrome Cost vs. Lift AMER vs US+CA")
+```
+
+***
+### Summary of Findings
+1. After the log transformation, Chrome cost vs lift follows a positive linear trend
+2. US+CA require more cost for lift as opposed to other countries in AMER
+3. BKWS data points mainly towards top of the plots, suggesting they obtained higher lift as opposed to other tactics
+
+
+## Non-Chrome - Cost vs. Lift Scatterplots {.tabset .tabset-fade .tabset-pills} 
+### Cost vs. Lift Scatterplot by PA
+```{r}
+Non_Chrome_CLS_2022 %>%
+  filter(tactic != "All") %>%
+  ggplot(aes(x = cost_spent_on_exposed_group,
+             y = absolute_lift,
+             color = pa
+             )) +
+  geom_point() +
+       xlab("Cost Spent") +
+       ylab("Lift") +
+       ggtitle("Non-Chrome Cost vs. Lift")
+```
+***
+### Log Transformation Cost vs. Lift Scatterplot by PA
+```{r}
+Non_Chrome_CLS_2022 %>%
+  filter(tactic != "All") %>%
+  ggplot(aes(x = log(cost_spent_on_exposed_group),
+             y = log(abs(absolute_lift)),
+             color = pa
+             )) +
+  geom_point() +
+       xlab("Log(Cost Spent)") +
+       ylab("Log(Lift)") +
+       ggtitle("Non-Chrome Cost vs. Lift by PA")
+```
+### Log Transformation Cost vs. Lift Scatterplot by Region
+```{r}
+Non_Chrome_CLS_2022 %>%
+  filter(tactic != "All") %>%
+  ggplot(aes(x = log(cost_spent_on_exposed_group),
+             y = log(abs(absolute_lift)),
+             color = region_v2,
+             shape = tactic_v2
+             )) +
+  geom_point() +
+       xlab("Log(Cost Spent)") +
+       ylab("Log(Lift)") +
+       ggtitle("Non-Chrome Cost vs. Lift by Region and Tactic")
+```
+***
+### Log Transformation Cost vs. Lift for AMER and AMER_USCA
+```{r}
+Non_Chrome_CLS_2022 %>%
+  filter(tactic != "All") %>%
+  filter(region_v2 %in% c("AMER", "AMER_USCA")) %>%
+  ggplot(aes(x = log(cost_spent_on_exposed_group),
+             y = log(abs(absolute_lift)),
+             color = region_v2,
+             shape = pa
+             )) +
+  geom_point() +
+       xlab("Log(Cost Spent)") +
+       ylab("Log(Lift)") +
+       ggtitle("Non-Chrome Cost vs. Lift AMER vs. US+CA by Region and PA")
+```
+***
+### Summary of Findings
+1. All PA's follow a positive linear trend
+2. Over all of the PA's there doesn't appear to be clear distinction between AMER and AMER_USCA 
+3. Google Cloud for AMER_USCA seems to require higher cost for lift 
+
+## Normality Diagnosis Plots Chrome {.tabset .tabset-fade .tabset-pills}
+
+### QQ Plots 
+```{r}
+Chrome_CLS_2022_Stats %>%
+  select(absolute_lift, cost_spent_on_exposed_group) %>%
+  plot_qq()
+```
+### QQ Plots by Region
+```{r}
+Chrome_CLS_2022_Stats %>%
+  select(absolute_lift, cost_spent_on_exposed_group, region_v2) %>%
+  plot_qq(by = "region_v2")
+```
+### QQ Plots by Tactic 
+```{r}
+Chrome_CLS_2022_Stats %>%
+  select(absolute_lift, cost_spent_on_exposed_group, tactic_v2) %>%
+  plot_qq(by = "tactic_v2")
+```
+### Normality Diagnosis for all Lift 
+```{r}
+Chrome_CLS_2022_Stats %>%
+  plot_normality(absolute_lift)
+```
+### Normality Diagnosis for all Cost
+```{r}
+Chrome_CLS_2022_Stats %>%
+  plot_normality(cost_spent_on_exposed_group)
+```
+
+### Normality Diagnosis for Lift by Region
+```{r}
+Chrome_CLS_2022_Stats %>%
+  group_by(region_v2) %>%
+  plot_normality(absolute_lift)
+```
+### Normality Diagnosis Plot for Cost by Region
+```{r}
+Chrome_CLS_2022_Stats %>%
+  group_by(region_v2) %>%
+  plot_normality(cost_spent_on_exposed_group)
+```
+### Summary of Findings
+1. For both Cost and Lift, the log transformation more closely makes them a normal distribution
+2. The only normal distribution achieved for lift when separating by regions was APAC with the log transformation
+
+## Normality Diagnosis Non-Chrome {.tabset .tabset-fade .tabset-pills}
+
+### QQ Plots
+```{r}
+Chrome_CLS_2022_Stats %>%
+  select(absolute_lift, cost_spent_on_exposed_group) %>% 
+  plot_qq()
+```
+
+### QQ Plots by PA
+```{r}
+Non_Chrome_CLS_2022_Stats %>%
+  select(absolute_lift, cost_spent_on_exposed_group, pa) %>%
+  plot_qq(by = "pa")
+```
+
+### QQ Plots by Region 
+```{r}
+Non_Chrome_CLS_2022_Stats %>%
+  select(absolute_lift, cost_spent_on_exposed_group, region_v2) %>%
+  plot_qq(by = "region_v2")
+```
+### Normality Diagnosis for all Lift
+```{r}
+Non_Chrome_CLS_2022_Stats %>%
+  plot_normality(absolute_lift)
+```
+### Normality Diagnosis for all Cost Spent 
+```{r}
+Non_Chrome_CLS_2022_Stats %>%
+  plot_normality(cost_spent_on_exposed_group)
+```
+
+### Normality Diagnosis Lift plots by PA
+```{r}
+Non_Chrome_CLS_2022_Stats %>%
+  group_by(pa) %>%
+  plot_normality(absolute_lift)
+```
+### Normality Diagnosis Cost Plots by PA
+```{r}
+Non_Chrome_CLS_2022_Stats %>%
+  group_by(pa) %>%
+  plot_normality(cost_spent_on_exposed_group)
+```
+
+
+### Normality Diagnosis Lift Plots by Region
+```{r}
+Non_Chrome_CLS_2022_Stats %>%
+  group_by(region_v2) %>%
+  plot_normality(absolute_lift)
+```
+### Normality Diagnosis Cost Plots by Region
+```{r}
+Non_Chrome_CLS_2022_Stats %>%
+  group_by(region_v2) %>%
+  plot_normality(cost_spent_on_exposed_group)
+```
+### Summary of Findings
+1. Log transformation for Cost and Lift most closely resembles a normal distribution 
+2. No clear normal disribution for lift seen when separating by PA
+
+## Kruskal-Wallis Chrome {.tabset .tabset-fade .tabset-pills} 
+
+### Lift ~ Region
+```{r}
+Chrome_CLS_2022_Stats <- Chrome_CLS_2022 %>%
+  filter(tactic != "All") 
+
+  kruskal.test(absolute_lift ~ region_v2, data = Chrome_CLS_2022_Stats)
+```
+### Lift ~ Region (excluding AO regions)
+```{r}
+Chrome_CLS_2022_Stats <- Chrome_CLS_2022 %>%
+  filter(tactic != "All") %>%
+  filter(region_v2 != "AO")
+
+  kruskal.test(absolute_lift ~ region_v2, data = Chrome_CLS_2022_Stats)
+```
+
+###  Lift ~ Tactic
+```{r}
+kruskal.test(absolute_lift ~ tactic_v2, data = Chrome_CLS_2022_Stats)
+```
+### Lift ~ Quarter
+```{r}
+kruskal.test(absolute_lift ~ quarter, data = Chrome_CLS_2022_Stats)
+
+```
+### Summary of Findings
+1. Region and Tactic have significant differences in groups 
+2. Quarter doesn't seem to play a role in attributing to the lift 
+
+## Kruskal-Wallis Non-Chrome {.tabset .tabset-fade .tabset-pills} 
+
+### Lift ~ PA
+```{r}
+Non_Chrome_CLS_2022_Stats <- Non_Chrome_CLS_2022 %>%
+  filter(tactic != "All") 
+
+kruskal.test(absolute_lift ~ pa, data = Non_Chrome_CLS_2022_Stats)
+```
+### Lift ~ Region
+```{r}
+kruskal.test(absolute_lift ~ region_v2, data = Non_Chrome_CLS_2022_Stats)
+
+```
+### Lift ~ Region (Excluding APAC)
+```{r}
+Non_Chrome_CLS_2022_Stats <- Non_Chrome_CLS_2022 %>%
+  filter(tactic != "All") %>%
+  filter(region_v2 != "APAC")
+
+kruskal.test(absolute_lift ~ region_v2, data = Non_Chrome_CLS_2022_Stats)
+```
+
+### Lift ~ Tactic
+```{r}
+kruskal.test(absolute_lift ~ tactic_v2, data = Non_Chrome_CLS_2022_Stats)
+
+```
+### Lift ~ Quarter
+```{r}
+kruskal.test(absolute_lift ~ quarter, data = Non_Chrome_CLS_2022_Stats)
+
+```
+### Summary of Findings
+1. PA groups have most significant difference in lift
+2. Tactic was not significant like it was in Chrome data 
+3. Unlike Chrome data, the quarter groups do show a significant difference in lift 
+
+## Pairwise Wilcox Test {.tabset .tabset-fade .tabset-pills}
+
+### Chrome Region Differences 
+```{r}
+pairwise.wilcox.test(Chrome_CLS_2022_Stats$absolute_lift, Chrome_CLS_2022_Stats$region_v2,
+                 p.adjust.method = "BH")
+```
+### Non-Chrome Region Differences 
+```{r}
+pairwise.wilcox.test(Non_Chrome_CLS_2022_Stats$absolute_lift, Non_Chrome_CLS_2022_Stats$region_v2,
+                 p.adjust.method = "BH")
+```
+### Non-Chrome PA Differences
+```{r}
+pairwise.wilcox.test(Non_Chrome_CLS_2022_Stats$absolute_lift, Non_Chrome_CLS_2022_Stats$pa,
+                 p.adjust.method = "BH")
+```
+
+### Non-Chrome Quarter Differences 
+```{r}
+pairwise.wilcox.test(Non_Chrome_CLS_2022_Stats$absolute_lift, Non_Chrome_CLS_2022_Stats$quarter,
+                 p.adjust.method = "BH")
+```
+### Summary of Findings
+1. Chrome - only EMEA vs. AO regions showed a significant difference in lift 
+2. Non-Chrome - only APAC vs. AMER_USCA regions showed significant difference in lift
+3. Non-Chrome - All PA's showed significant difference except Pixel vs. DSM
+4. Non-Chrome - Only Q2 vs Q3 showed significant difference in lift 
+
+
+# Experimenting with Advanced EDA Techniques 
+["Advanced EDA Techniques and Packages"](https://yuzar-blog.netlify.app/posts/2021-01-09-exploratory-data-analysis-and-beyond-in-r-in-progress/)
+
+## 3D Plots {.tabset .tabset-fade .tabset-pills}
+### Chrome - Lift v. Cost v. Duration
+```{r}
+#install.packages("scatterplot3d")
+#install.packages("rgl")
+#install.packages("rdlwidget")
+#library(scatterplot3d)
+#library("rgl")
+
+
+#Scatter3D_Graph <- Final_CLS_2022_Study_List%>%
+ # filter(channel == 'Search') %>%
+  #filter(tactic !='All')
+  
+scatterplot3d(Chrome_CLS_2022_Stats$cost_spent_on_exposed_group,
+              Chrome_CLS_2022_Stats$duration,
+              Chrome_CLS_2022_Stats$absolute_lift,
+              main="3D Scatterplot",
+              angle=55,
+              xlab = "Cost Spent",
+              ylab = "Duration",
+              zlab = "Lift")
+
+plot3d(Chrome_CLS_2022_Stats$cost_spent_on_exposed_group,
+              Chrome_CLS_2022_Stats$duration,
+              Chrome_CLS_2022_Stats$absolute_lift,
+              main="3D Scatterplot",
+              angle=55,
+              xlab = "Cost Spent",
+              ylab = "Duration",
+              zlab = "Lift")
+```
+### Non-Chrome - Lift v. Cost v. Duration
+```{r}
+scatterplot3d(Non_Chrome_CLS_2022_Stats$cost_spent_on_exposed_group,
+              Non_Chrome_CLS_2022_Stats$duration,
+              Non_Chrome_CLS_2022_Stats$absolute_lift,
+              main="3D Scatterplot",
+              angle=55,
+              xlab = "Cost Spent",
+              ylab = "Duration",
+              zlab = "Lift")
+```
+
+
+## SmartEDA {.tabset .tabset-fade .tabset-pills}
+
+###Chrome - Frequency and Percentage for each categorical variable 
+```{r}
+Chrome_CLS_2022[c("year","quarter","region_v2","pa","tactic","Significant_Spend", "channel")] %>%
+  filter(tactic != "All") %>%
+  ExpCatViz()
+  
+```
+
+***
+### Non-Chrome - Frequency and Percentage for each categorical variable 
+```{r}
+Non_Chrome_CLS_2022[c("year","quarter","region_v2","pa","tactic","Significant_Spend", "channel")] %>%
+  filter(tactic != "All") %>%
+  ExpCatViz()
+```
+
+
+### Non-Chrome % of Significant Spend by Grouped Conversion
+```{r}
+ExpCatViz(
+  Non_Chrome_CLS_2022 %>%
+    filter(tactic != "All") %>%
+    select(grouped_conversion, Significant_Spend),
+  target="grouped_conversion")
+
+```
+
+***
+
+### Non-Chrome % Significant Spend by Region
+```{r}
+ExpCatViz(
+  Final_CLS_2022_Study_List %>%
+    filter(channel == "Search") %>%
+    filter(tactic != "All") %>%
+    select(region_v2, Significant_Spend),
+  target="region_v2")
+```
+***
+## ggstatsplot {.tabset .tabset-fade .tabset-pills}
+
+### % of Non-Chrome Significant Spend by PA with p-values 
+```{r}
+Non_Chrome_CLS_2022_Stats %>%
+  ggbarstats(
+    x = Significant_Spend,
+    y = pa,
+    label = "both"
+  )
+```
+***
+### % of Non-Chrome Significant Spend by Region with p-values
+```{r}
+Non_Chrome_CLS_2022_Stats %>%
+  ggbarstats(
+    x = Significant_Spend,
+    y = region_v2,
+    label = "both"
+  )
+```
+***
+### % of Chrome Significant Spend by Region with p-values
+```{r}
+Chrome_CLS_2022_Stats %>%
+  ggbarstats(
+    x = Significant_Spend,
+    y = region_v2,
+    label = "both"
+  )
+```
+
+### Boxplot Comparison by PA's - Non-Chrome
+```{r}
+Non_Chrome_CLS_2022_Stats %>%
+  select(absolute_lift, cost_spent_on_exposed_group, pa, region_v2, grouped_conversion) %>%
+  ggbetweenstats(x = pa, y = absolute_lift, type = "np")
+```
+### Boxplot Comparison by Region - Non-Chrome
+```{r}
+Non_Chrome_CLS_2022_Stats %>%
+  select(absolute_lift, cost_spent_on_exposed_group, pa, region_v2, grouped_conversion) %>%
+  ggbetweenstats(x = region_v2, y = absolute_lift, type = "np")
+```
+
+### Boxplot Comparison by Region - Chrome
+```{r}
+Chrome_CLS_2022_Stats %>%
+  select(absolute_lift, cost_spent_on_exposed_group, pa, region_v2, grouped_conversion) %>%
+  ggbetweenstats(x = region_v2, y = absolute_lift, type = "np")
+```
+
+
+***
+## dlookr {.tabset .tabset-fade .tabset-pills}
+
+### Non-Chrome Stats table 
+```{r}
+Non_Chrome_CLS_2022_Stats %>%
+  select(cost_spent_on_exposed_group, absolute_lift, relative_lift, duration, pa) %>%
+  diagnose_numeric() %>%
+  flextable()
+```
+***
+### Chrome Stats Table 
+```{r}
+Chrome_CLS_2022_Stats %>%
+  select(cost_spent_on_exposed_group, absolute_lift, relative_lift, duration, pa) %>%
+  diagnose_numeric() %>%
+  flextable()
+```
+## DataExplorer {.tabset .tabset-fade .tabset-pills}
+
+### Chrome data histogram
+```{r}
+Chrome_CLS_2022_Stats %>%
+  select(absolute_lift, cost_spent_on_exposed_group) %>%
+  plot_histogram(ncol =2, title = "Lift and Cost Spent Chrome")
+```
+### Non-Chrome histogram
+```{r}
+Non_Chrome_CLS_2022_Stats %>%
+  select(absolute_lift, cost_spent_on_exposed_group) %>%
+  plot_histogram(ncol =2, title = "Lift and Cost Spent Non-Chrome")
+```
+
+***
+
+
+
+
+
+```{r}
+Final_CLS_2022_Study_List %>%
+  filter(channel == "Search") %>%
+  filter(tactic != "All") %>%
+  correlate(cost_spent_on_exposed_group, absolute_lift)
+```
+***
+```{r}
+correlate_func <- function(pa_val) {
+  plot_corr<- Final_CLS_2022_Study_List %>%
+  filter(channel == "Search") %>%
+  filter(tactic != "All") %>%
+  filter(pa == pa_val) %>%
+  correlate(cost_spent_on_exposed_group, absolute_lift)
+  print(plot_corr)
+}
+
+pa_vals = c("Chrome", "Chromebook", "DSM", "Pixel", "Google Cloud")
+
+for (i in pa_vals) {
+  correlate_func(i)
+}
+```
+Findings
+1. All pa's except Pixel have correlation coefficients >0.5 for absolute lift and cost spent
+2. Chromebook and DSM have over .90 correlation between lift and cost
+3. Pixel data shows negative correlation between lift and cost - only has 7 datapoints
+***
+## tSNE graph by grouped conversion for Non-Chrome data 
+```{r}
+Non_Chrome_CLS_2022_Stats_2 <- 
+  Non_Chrome_CLS_2022_Stats %>%
+  select(-c(study_id, year, quarter)) %>%
+  mutate(ID = row_number())
+
+#extracting categorical columns 
+Non_Chrome_CLS_2022_Stats_meta <- Non_Chrome_CLS_2022_Stats_2 %>%
+  select(ID, pa, tactic, grouped_conversion, region_v2)
+
+#tSNE_fit <- Final_CLS_2022_Study_List_2 %>%
+ # select(ID,treatment_user_count, exposed, control_user_count, control, scaling_factor,
+  #       cost_spent_on_exposed_group, absolute_lift, relative_lift, Significant_Spend) %>%
+  #column_to_rownames("ID") %>%
+  #scale() %>%
+  #Rtsne()
+
+#Selecting only numerical columns and fitting the data 
+tSNE_fit <- Non_Chrome_CLS_2022_Stats_2 %>%
+  select(ID,treatment_user_count, exposed, cost_spent_on_exposed_group, absolute_lift, relative_lift, Significant_Spend) %>%
+  column_to_rownames("ID") %>%
+  scale() %>%
+  Rtsne()
+
+#turning results into dataframe 
+tSNE_df <- tSNE_fit$Y %>%
+  as.data.frame() %>%
+  rename(tSNE1="V1", tSNE2="V2") %>%
+  mutate(ID = row_number())
+
+#joining categorical and numerical columns
+tSNE_df <- tSNE_df %>%
+  inner_join(Non_Chrome_CLS_2022_Stats_meta, by = "ID")
+
+tSNE_df %>% head()
+
+tSNE_df %>%
+  ggplot(aes(x = tSNE1,
+             y = tSNE2,
+             color = grouped_conversion)) +
+  geom_point() +
+  theme(legend.position="bottom")
+  
+```
+## tSNE Graph by region for Non-Chrome Data 
+```{r}
+Final_CLS_2022_Study_List_2 <- 
+  Final_CLS_2022_Study_List %>%
+  filter(channel =="Search") %>%
+  filter(tactic != "All") %>%
+  select(-c(study_id, year, quarter)) %>%
+  mutate(ID = row_number())
+
+Final_CLS_2022_Study_List_meta <- Final_CLS_2022_Study_List_2 %>%
+  select(ID, pa, tactic, grouped_conversion, region_v2)
+
+#tSNE_fit <- Final_CLS_2022_Study_List_2 %>%
+ # select(ID,treatment_user_count, exposed, control_user_count, control, scaling_factor,
+  #       cost_spent_on_exposed_group, absolute_lift, relative_lift, Significant_Spend) %>%
+  #column_to_rownames("ID") %>%
+  #scale() %>%
+  #Rtsne()
+
+tSNE_fit <- Final_CLS_2022_Study_List_2 %>%
+  select(ID,treatment_user_count, exposed, cost_spent_on_exposed_group, absolute_lift, relative_lift, Significant_Spend) %>%
+  column_to_rownames("ID") %>%
+  scale() %>%
+  Rtsne()
+
+tSNE_df <- tSNE_fit$Y %>%
+  as.data.frame() %>%
+  rename(tSNE1="V1", tSNE2="V2") %>%
+  mutate(ID = row_number())
+
+tSNE_df <- tSNE_df %>%
+  inner_join(Final_CLS_2022_Study_List_meta, by = "ID")
+
+tSNE_df %>% head()
+
+tSNE_df %>%
+  ggplot(aes(x = tSNE1,
+             y = tSNE2,
+             color = pa)) +
+  geom_point() +
+  theme(legend.position="bottom")
+```
+
+## Outlier Detection {.tabset .tabset-fade .tabset-pills}
+### IQR Outlier Diagnosis Chrome
+```{r}
+Chrome_CLS_2022_Stats %>%
+  select(cost_spent_on_exposed_group, absolute_lift) %>%
+  diagnose_outlier() %>%
+  flextable()
+```
+*** 
+
+### IQR Outlier Diagnosis Non-Chrome
+```{r}
+Non_Chrome_CLS_2022_Stats %>%
+  select(cost_spent_on_exposed_group, absolute_lift) %>%
+  diagnose_outlier() %>%
+  flextable()
+```
+
+### Plotting Cost and Lift Without Outliers - Chrome 
+```{r}
+Chrome_CLS_2022_Stats %>%
+  dplyr::select(absolute_lift, cost_spent_on_exposed_group) %>%
+  plot_outlier()
+  
+```
+
+*** 
+### Plotting Cost and Lift Without Outliers - Non-Chrome 
+```{r}
+Non_Chrome_CLS_2022_Stats %>%
+  dplyr::select(absolute_lift, cost_spent_on_exposed_group) %>%
+  plot_outlier()
+```
+***
